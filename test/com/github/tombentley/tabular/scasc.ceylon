@@ -219,7 +219,7 @@ void testIsSubclassOf() {
 }
 
 void testDb() {
-    value dbr = DbReader(LineReader(
+    value dbr = DbReader(`module com.github.tombentley.tabular`, LineReader(
             "# com.github.tombentley.tabular::Foo extends ceylon.language::Basic
              # <id>,name
              0,\"foo1\"
