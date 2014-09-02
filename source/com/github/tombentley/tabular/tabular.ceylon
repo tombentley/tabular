@@ -8,6 +8,7 @@ import ceylon.language.meta.model {
     Type,
     Class,
     Function,
+    FunctionModel,
     Value,
     Applicable,
     Generic,
@@ -50,6 +51,18 @@ import ceylon.collection {
     MutableMap,
     Queue,
     LinkedList
+}
+
+Type[] typeArguments(Generic g) {
+    TypeParameter[] tps;
+    if (is ClassOrInterface g) {
+        tps = g.declaration.typeParameterDeclarations;
+    } else if (is FunctionModel g) {
+        tps = g.declaration.typeParameterDeclarations;
+    } else {
+        throw;
+    }
+    return { for (tp in tps) g.typeArguments[tp] else nothing }.sequence();
 }
 
 "Every instance will be identified by a unique String, but let's use an 
@@ -333,7 +346,7 @@ class ValueTable(IdAllocator allocator, Reference<Object?> enlist(Anything insta
         assert (false); // should be impossible
     }
     Id[] typeArguments(Generic g) {
-        return g.typeArguments.values.collect(type_);
+        return package.typeArguments(g).collect(type_);
     }
     Id classOrInterface(ClassOrInterface c) {
         if (c.typeArguments.empty) {
@@ -380,17 +393,17 @@ class ValueTable(IdAllocator allocator, Reference<Object?> enlist(Anything insta
                 assert (is Class cls = type(val));
                 return application(cls, [val.first]);
             } else if (is ArraySequence<Anything> val) {
-                value fn = `function sequence`.apply<Anything,Nothing>(type(val).typeArguments.values.first else `Object`);
+                value fn = `function sequence`.apply<Anything,Nothing>(package.typeArguments(type(val)).first else `Object`);
                 return application(fn, val);
             } else if (is Range<Anything> val) {
                 value name = type(val).declaration.name;
                 Function fn;
                 Anything[] args;
                 if (name == "Span") {
-                    fn = `function span`.apply(type(val).typeArguments.values.first else `Object`);
+                    fn = `function span`.apply(package.typeArguments(type(val)).first else `Object`);
                     args = [val.first, val.last];
                 } else if (name == "Measure") {
-                    fn = `function measure`.apply(type(val).typeArguments.values.first else `Object`);
+                    fn = `function measure`.apply(package.typeArguments(type(val)).first else `Object`);
                     args = [val.first, val.size];
                 } else {
                     throw;
@@ -431,15 +444,15 @@ object unset {
  Each table holds attribute values of the given [[classModel]] 
  for a number of [[Id]]-identified instances."
 class Table(classModel, superModel, cols) {
-    shared Id classModel;
+    shared ClassModel classModel;
     "The class whose state this table serializes"
-    shared Id classDeclaration => classModel.declaration;
+    shared ClassDeclaration classDeclaration => classModel.declaration;
     
     "The superclass of the classDeclaration at the time the data was serialized*."
-    shared Id? superModel;
+    shared ClassModel? superModel;
     
     "The superclass of the classDeclaration at the time the data was serialized*."
-    shared Id? superDeclaration => superModel?.declaration;
+    shared ClassDeclaration? superDeclaration => superModel?.declaration;
     
     shared List<TypeParameter> typeParameters => classDeclaration.typeParameterDeclarations;
     
@@ -877,6 +890,8 @@ shared class TabularSerializer() {
                 values.add([attribute, id]);
             }
         }
+        shared actual void putElement<Type>(Integer index, Type referenced) {
+        }
         
         shared actual void putTypeArgument(TypeParameter typeParameter, Type argument) {
             typeParameters.add([typeParameter, argument.string]);
@@ -964,7 +979,7 @@ shared class TabularSerializer() {
         ctw.write(valueTable);
         
         TableWriter writer = TableWriter(builder);
-        for (table in tables.values) {
+        for (table in tables.items) {
             writer.write(table);
         }
         return builder.string;
@@ -1155,7 +1170,7 @@ class ValueTableWriter(StringBuilder output) {
         throw Exception("unsupported datum type ``type(v)``");
     }
 }
-
+/*
 class ValueTableReader(LineReader reader) {
     ValueTable read() {
         // Have we reached eof yet?
@@ -1165,20 +1180,19 @@ class ValueTableReader(LineReader reader) {
         while (true) {
             value line = reader.readLine();
             if (exists line) {
-                if (line.startsWith("#") {
+                if (line.startsWith("#")) {
                     reader.unread();
-                    break();
+                    break;
                 }
-                assert(exists commaIndex = line.firstOccurrence(','));
-                String ident = line[...commaIndex-1];
-                String datum = line[commaIndex+1...]
-                
+                assert (exists commaIndex = line.firstOccurrence(','));
+                String ident = line[... commaIndex - 1];
+                String datum = line[commaIndex + 1 ...]
             } else {
                 throw Exception("unexpected end of stream");
             }
         }
     }
-}
+}*/
 
 class TableReader(LineReader reader, TypeParser typeParser) {
     
@@ -1506,6 +1520,10 @@ shared class TabularDeserializer(Module mod, String serialized) {
                 throw Exception("attribute not found: ``attribute``");
             }
             
+            shared actual Type|Reference<Type> getElement<Type>(Integer index) {
+                return nothing;
+            }
+            
             shared actual Type getTypeArgument(TypeParameter typeParameter) {
                 for (table in tables) {
                     if (table.classDeclaration == typeParameter.container) {
@@ -1562,7 +1580,6 @@ shared class TabularDeserializer(Module mod, String serialized) {
     }
 }
 
-
 class ExperimentSuper(a) {
     shared default String a;
 }
@@ -1588,7 +1605,6 @@ void experiment() {
     print(x.bind(sub).get());
     print(y.bind(sub).get());
     print(z.bind(sub).get());
-     
 }
 // So we could use Attribute in the deconstructed API, but 
 // the $serialize$() method would have to just get the declaration
