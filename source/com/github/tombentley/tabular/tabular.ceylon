@@ -53,6 +53,70 @@ import ceylon.collection {
     LinkedList
 }
 
+"The *fundemental types* that are also value types."
+alias FundementalValueType => String|Character|Integer|Float|Byte;
+
+"Whether the given instance is a `ceylon.language::Array`."
+Boolean isArray(Anything instance) {
+    // this is lame but because Array is invariant there's no 
+    // type we can use to test for array-ness
+    
+    return instance is List<Anything>// shortcircuit
+            && type(instance).declaration.qualifiedName == "ceylon.language::Array";
+}
+
+"Whether the given instance is *fundemental*. 
+ An instance is fundemental if it cannot be decomposed 
+ in terms of its attributes."
+Boolean isFundementalType(Anything instance) {
+    if (instance is FundementalValueType) {
+        return true;
+    } else if (isArray(instance)) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+"The ValueDeclaration for the `object` declaration if the given instance is 
+ the instance of a top level anonymous class, otherwise null."
+ValueDeclaration? getObjectValueDeclaration(Anything instance) {
+    if (exists instance) {
+        if (instance == true) {
+            return `value true`;
+        } else if (instance == false) {
+            return `value false`;
+        } else {
+            return type(instance).declaration.objectValue;
+        }
+    } else {
+        return `value null`;
+    }
+}
+"Whether the given instance is an anonymous class instance (`object` declaration)."
+Boolean isObjectDeclaration(Anything instance) {
+    return getObjectValueDeclaration(instance) exists;
+}
+
+"Whether the given instance can be serialized."
+Boolean isSerializable(Anything thing) {
+    if (thing is Identifiable
+    || thing is ArraySequence<Anything> ) {
+        // it can be decomposed
+        return true; // TODO and is annotated serializable
+    } else if (thing is FundementalValueType) {
+        // it's fundemental
+        return true;
+    } else if (isArray(thing)) {
+        return true;
+    } else if (isObjectDeclaration(thing)) {
+        // we can store a reference to it in the meta table
+        return true;
+    } else {
+        return false;
+    }
+}
+
 Type[] typeArguments(Generic g) {
     TypeParameter[] tps;
     if (is ClassOrInterface g) {
@@ -65,8 +129,8 @@ Type[] typeArguments(Generic g) {
     return { for (tp in tps) g.typeArguments[tp] else nothing }.sequence();
 }
 
-"Every instance will be identified by a unique String, but let's use an 
- alias for clarity."
+"Every instance will be identified by a unique `String`, 
+ but let's use an alias for clarity."
 alias Id => String;
 
 "Generates ids from the characters in the given alphabet.
@@ -131,6 +195,22 @@ class IdAllocator() {
     "The id generator"
     IdGenerator generator = IdGenerator();
     
+    shared actual String string {
+        value sb = StringBuilder();
+        sb.appendCharacter('{');
+        if (exists nid=nullId) {
+            sb.append("null->").append(nid);
+        }
+        for (inst->id in valueIds) {
+            sb.append(inst.string).append("->").append(id);
+        }
+        for (inst->id in ids) {
+            sb.append(inst.string).append("->").append(id);
+        }
+        sb.appendCharacter('}');
+        return sb.string;
+    }
+    
     "Obtain an id for the given instance, allocating an id if necessary."
     shared Id allocateId(Object? instance) {
         switch (instance)
@@ -185,7 +265,7 @@ class IdAllocator() {
     }
 }
 
-"Representation of a union type within a [[ValueTable]]"
+"Representation of a union type within a [[MetaTable]]"
 class Union(shared Id[] cases) extends Object() {
     shared actual Boolean equals(Object other) {
         if (is Union other) {
@@ -197,7 +277,7 @@ class Union(shared Id[] cases) extends Object() {
     }
     shared actual Integer hash => cases.hash;
 }
-"Representation of an intersection type within a [[ValueTable]]"
+"Representation of an intersection type within a [[MetaTable]]"
 class Intersection(shared Id[] satisfyeds) extends Object() {
     shared actual Boolean equals(Object other) {
         if (is Intersection other) {
@@ -209,7 +289,7 @@ class Intersection(shared Id[] satisfyeds) extends Object() {
     }
     shared actual Integer hash => satisfyeds.hash;
 }
-"Representation of a member access within a [[ValueTable]]"
+"Representation of a member access within a [[MetaTable]]"
 class Member(shared Id pck, shared [Id+] members) extends Object() {
     shared actual Boolean equals(Object other) {
         if (is Member other) {
@@ -220,7 +300,7 @@ class Member(shared Id pck, shared [Id+] members) extends Object() {
     }
     shared actual Integer hash => pck.hash + members.hash;
 }
-"Representation of a type application within a [[ValueTable]]."
+"Representation of a type application within a [[MetaTable]]."
 class TypeApplication(shared Id generic, shared [Id*] typeArguments) extends Object() {
     shared actual Boolean equals(Object other) {
         if (is TypeApplication other) {
@@ -231,71 +311,16 @@ class TypeApplication(shared Id generic, shared [Id*] typeArguments) extends Obj
     }
     shared actual Integer hash => generic.hash + typeArguments.hash;
 }
-"Representation of a function application or class instantiation 
- within a [[ValueTable]]."
-class Application(shared Id ctor, shared Id[] arguments) extends Object() {
-    shared actual Boolean equals(Object other) {
-        if (is Application other) {
-            return ctor == other.ctor && arguments == other.arguments;
-        } else {
-            return false;
-        }
-    }
-    shared actual Integer hash => ctor.hash + arguments.hash;
-}
 
-"The language module scalar value types"
-alias ValueType => String|Character|Integer|Float|Byte;
+alias MetaValue=>Package|Member|TypeApplication|Union|Intersection|ClassDeclaration|ValueDeclaration|Type;
 
-ValueDeclaration? getObjectValueDeclaration(Anything o) {
-    if (exists o) {
-        if (o == true) {
-            return `value true`;
-        } else if (o == false) {
-            return `value false`;
-        } else {
-            return type(o).declaration.objectValue;
-        }
-    } else {
-        return `value null`;
-    }
-}
-
-Boolean isObjectDeclaration(Anything o) {
-    return getObjectValueDeclaration(o) exists;
-}
-
-"""Determines whether this is something we can add to the [[ValueTable]], 
-   rather than treating as an entity and putting in a [[Table]](s).
- 
-   Such values include:
- 
-   * The language module classes which do not satisfy 
-     `Identifiable` (true "value types", including `Sequence`).
-   * Values that are `object` declarations (include null, true and false).
-   * The Models and Declarations required to construct other values. 
-     For example to construct the entry `1->2` 
-     we need not only the values `1` and `2`, but also the
-     [[Class]] `Entry<Integer,Integer>` which in turn 
-     requires the [[Class] `Integer,
-     the [[ClassDeclaration]]s for `Integer` and `Entry` and 
-     the [[Package]] `ceylon.language`.
-   """
-Boolean isValue(Anything instance) {
-    if (instance is ValueType|Entry<Object,Object>|Sequential<Anything>|Null) {
-        return true;
-    }
-    if (isObjectDeclaration(instance)) {
-        return true;
-    }
-    return false;
-}
-
-"Holds values, as defined by [[isValue]]."
-class ValueTable(IdAllocator allocator, Reference<Object?> enlist(Anything instance)) {
-    "All the things which we store in [[data]]."
-    shared alias Puttable => ValueType|Reference<Object?>|Package|Member|TypeApplication|Application|Union|Intersection|ClassDeclaration|ValueDeclaration;
+"Holds meta information about types and values (but not functions). 
+ This table has the special property that it only refers to things also 
+ in the meta table, and nothing in other tables."
+class MetaTable<Puttable>(IdAllocator allocator /*, Reference<Object?> enlist(Anything instance)*/)
+        given Puttable satisfies Object {
     
+    "Underlying map"
     HashMap<Id,Puttable> data = HashMap<Id,Puttable>();
     
     Id alloPut(Puttable cls) {
@@ -304,42 +329,41 @@ class ValueTable(IdAllocator allocator, Reference<Object?> enlist(Anything insta
         return clsId;
     }
     Id putOrEnlist(Anything o) {
-        if (!isValue(o)) {
+        /*if (!isValue(o)) {
             assert (is Id id = enlist(o).id);
             return id;
-        } else {
-            assert (is Puttable item = o);
-            return alloPut(item);
-        }
+        } else {*/
+        assert (is Puttable item = o);
+        return alloPut(item);
+        //}
     }
     Id package_(Package p) {
+        assert (is Puttable p);
         return alloPut(p);
     }
     Id valueDeclaration(ValueDeclaration vd) {
         if (is Package p = vd.container) {
-            return alloPut(Member(package_(p), [vd.name]));
+            assert (is Puttable member = Member(package_(p), [vd.name]));
+            return alloPut(member);
         }
         return nothing; // TODO attributes
     }
     Id classOrInterfaceDeclaration(ClassOrInterfaceDeclaration cd) {
         if (is Package p = cd.container) {
-            return alloPut(Member(package_(p), [cd.name]));
+            assert (is Puttable member = Member(package_(p), [cd.name]));
+            return alloPut(member);
         }
         return nothing; // TODO member classes
-    }
-    Id functionDeclaration(FunctionDeclaration cd) {
-        if (is Package p = cd.container) {
-            return alloPut(Member(package_(p), [cd.name]));
-        }
-        return nothing; // TODO methods 
     }
     Id type_(Type ta) {
         if (is ClassOrInterface ta) {
             return classOrInterface(ta);
         } else if (is UnionType ta) {
-            return alloPut(Union(ta.caseTypes.collect(type_)));
+            assert (is Puttable union = Union(ta.caseTypes.collect(type_)));
+            return alloPut(union);
         } else if (is IntersectionType ta) {
-            return alloPut(Intersection(ta.satisfiedTypes.collect(type_)));
+            assert (is Puttable intersection = Intersection(ta.satisfiedTypes.collect(type_)));
+            return alloPut(intersection);
         } else if (ta == nothingType) {
             return nothing; //TODO
         }
@@ -353,76 +377,21 @@ class ValueTable(IdAllocator allocator, Reference<Object?> enlist(Anything insta
             // for non-generic classes let's just record the declaration
             return classOrInterfaceDeclaration(c.declaration);
         } else {
-            return alloPut(TypeApplication(classOrInterfaceDeclaration(c.declaration), typeArguments(c)));
-        }
-    }
-    Id func(Function c) {
-        if (c.typeArguments.empty) {
-            // for non-generic functions let's just record the declaration
-            return functionDeclaration(c.declaration);
-        } else {
-            return alloPut(TypeApplication(functionDeclaration(c.declaration), typeArguments(c)));
+            assert (is Puttable ta = TypeApplication(classOrInterfaceDeclaration(c.declaration), typeArguments(c)));
+            return alloPut(ta);
         }
     }
     
-    Id application(Class|Function applicable, Anything[] arguments) {
-        Id a;
-        if (is Class applicable) {
-            a = classOrInterface(applicable);
-        } else if (is Function applicable) {
-            a = func(applicable);
-        } else {
-            assert (false);
-        }
-        return alloPut(Application(a, arguments.collect(putOrEnlist)));
-    }
-    
-    "Adds the given [[value|val]] to this table."
-    shared Id add(Anything val) {
-        assert (isValue(val));
+    "Adds the given [[value|val]] (and all its dependants) to this table."
+    shared Id add(Puttable val) {
+        //assert (isValue(val));
         
-        if (is ValueType val) {
-            value valId = allocator.allocateId(val);
-            data.put(valId, val);
-            return valId;
-        } else if (is Entry<Object,Object> val) {
-            assert (is Class cls = type(val));
-            return application(cls, [val.key, val.item]);
-        } else if (is Sequence<Anything> val) {
-            if (is Singleton<Anything> val) {
-                assert (is Class cls = type(val));
-                return application(cls, [val.first]);
-            } else if (is ArraySequence<Anything> val) {
-                value fn = `function sequence`.apply<Anything,Nothing>(package.typeArguments(type(val)).first else `Object`);
-                return application(fn, val);
-            } else if (is Range<Anything> val) {
-                value name = type(val).declaration.name;
-                Function fn;
-                Anything[] args;
-                if (name == "Span") {
-                    fn = `function span`.apply(package.typeArguments(type(val)).first else `Object`);
-                    args = [val.first, val.last];
-                } else if (name == "Measure") {
-                    fn = `function measure`.apply(package.typeArguments(type(val)).first else `Object`);
-                    args = [val.first, val.size];
-                } else {
-                    throw;
-                }
-                return application(fn, args);
-            } else if (is Tuple<Anything,Anything,Anything[]> val) {
-                assert (is Class cls = type(val));
-                return application(cls, [val.first, val.rest]);
-            } else {
-                "unexpected sequence type"
-                assert (false);
-            }
-        } else {
-            if (exists vd = getObjectValueDeclaration(val)) {
-                return valueDeclaration(vd);
-            } else {
-                assert (false);
-            }
+        if (is ClassOrInterface val) {
+            return classOrInterface(val);
+        } else if (is ValueDeclaration val) {
+            return valueDeclaration(val);
         }
+        throw;
     }
     
     shared Puttable get(Id id) {
@@ -671,21 +640,15 @@ String formatDatum<Type>(Type|Reference<Type> v) {
         if (is Id v) {
             
             return v; //"\"``quoteString(v)``\"";
-        } /*else if (is Integer v) {
+        } else if (is Integer v) {
             return "``v``";
-          } else if (is Byte v) {
+        } else if (is Byte v) {
             return "b``v``";
-          } else if (is Null v) {
-            return "null";
-          } else if (is Boolean v) {
-            return v.string;
-          } else if (is Character v) {
+        } else if (is Character v) {
             return "'``quoteCharacter(v)``'";
-          } else if (is Float v) {
+        } else if (is Float v) {
             return v.string;
-          } else if (is Empty v) { // XXX really?
-            return "empty";
-          } */ else {
+        } else {
             /*value valueType = type(v);
             if (valueType.declaration.anonymous
                         && valueType.declaration.toplevel) {
@@ -697,6 +660,7 @@ String formatDatum<Type>(Type|Reference<Type> v) {
     }
 }
 
+// TODO Get rid of this
 "The top level object declaration corresponding to the 
  given fully qualified name."
 throws (`class Exception`, "An object with this name could not be found")
@@ -760,8 +724,6 @@ Object? parseDatum(String datum, ValueDeclaration vd) {
                 return s;
             }
         } else {
-            // TODO starts with [ => sequence ???
-            // TODO starts with @ => key
             throw Exception("unhandled datum: ``datum``");
         }
     } else {
@@ -815,18 +777,10 @@ shared class TabularSerializer() {
     MutableMap<ClassModel,Table> tables = HashMap<ClassModel,Table>();
     value allocator = IdAllocator();
     
-    Boolean isSerializable(Object? thing) {
-        if (is Identifiable thing) {
-            // TODO and is annotated serializable
-            return true;
-        } else {
-            return isValue(thing);
-        }
-    }
-    
     "Queue of instances waiting to be serialized"
     Queue<SerializableReference<Object?>> instances = LinkedList<SerializableReference<Object?>>();
     
+    // TODO Get rid of this fucker
     value anotherFuckingMap = HashMap<Id,SerializableReference<Object?>>();
     
     "Adds the given [[instance]] to [[instances]] 
@@ -845,7 +799,9 @@ shared class TabularSerializer() {
         return r;
     }
     
-    ValueTable valueTable = ValueTable(allocator, enlist);
+    value metaTable = MetaTable<MetaValue>(allocator);
+    MetaTable<String>? stringTable = MetaTable<String>(allocator);
+    value arrayTable = MetaTable<Array<in Anything>>(allocator);
     
     class TabularDeconstructor() satisfies Deconstructor {
         variable Id id = "";
@@ -856,8 +812,6 @@ shared class TabularSerializer() {
         
         "Called when we start inspecting an instance"
         shared void beginInstance(Id id, Object? instance) {
-            "deconstructor should not see values"
-            assert (!isValue(instance));
             ClassModel classModel = type(instance);
             this.id = id;
             this.classModel = classModel;
@@ -877,9 +831,12 @@ shared class TabularSerializer() {
         }
         
         shared actual void putValue<Type>(ValueDeclaration attribute, Type referenced) {
+            ValueDeclaration? a = attribute;
+            print("``type(referenced)``: ``a else "???"`` =  ``referenced else "null"``");
             Object? ref = referenced of Object?;
-            if (isValue(ref)) {
-                values.add([attribute, valueTable.add(ref)]);
+            if (exists vd = getObjectValueDeclaration(ref)) {
+                // it's an object declaration, so add it to the meta table
+                values.add([attribute, metaTable.add(vd)]);
             } else {
                 /* TODO in general other serialization libraries would 
                         use annotations to know which references 
@@ -894,7 +851,9 @@ shared class TabularSerializer() {
         }
         
         shared actual void putTypeArgument(TypeParameter typeParameter, Type argument) {
-            typeParameters.add([typeParameter, argument.string]);
+            //values.add([attribute, metaTable.add(vd)]);
+            //typeParameters.add([typeParameter, argument.string]);
+            typeParameters.add([typeParameter, metaTable.add(argument)]);
         }
         "Gets the table for the given class, creating it if necessary. 
          Note this can only be called after all the values have been added
@@ -955,15 +914,32 @@ shared class TabularSerializer() {
             Object? inst = ref.instance();
             try {
                 // and add the instance to the context
-                if (isValue(inst)) {
-                    valueTable.add(inst);
+                if (is FundementalValueType inst) {
+                    switch (inst)
+                    case (is String) {
+                        if (exists stringTable) {
+                        } else {
+                            // put as literal
+                        }
+                    }
+                    case (is Character) {
+                    }
+                    case (is Integer) {
+                    }
+                    case (is Byte) {
+                    }
+                    case (is Float) {
+                    }
+                } else if (isArray(inst)) {
+                } else if (exists vd = getObjectValueDeclaration(inst)) {
+                    metaTable.add(vd);
                 } else if (isSerializable(inst)) {
                     value reference = ref; //context.reference(id, inst);
                     dtor.beginInstance(id, inst);
                     reference.serialize(dtorFactory);
                     dtor.endInstance();
                 } else {
-                    throw Exception("instance `` inst else "null" `` with id ``id`` is not serializable");
+                    throw Exception("instance `` inst else "null" `` (type ``type(inst)``) with id ``id`` is not serializable");
                 }
             } catch (Exception e) {
                 throw Exception("problem while serializing `` inst else "null" `` with id ``id``", e);
@@ -975,8 +951,8 @@ shared class TabularSerializer() {
     shared String write() {
         StringBuilder builder = StringBuilder();
         
-        ValueTableWriter ctw = ValueTableWriter(builder);
-        ctw.write(valueTable);
+        value ctw = MetaTableWriter<MetaValue>(builder);
+        ctw.write(metaTable);
         
         TableWriter writer = TableWriter(builder);
         for (table in tables.items) {
@@ -1105,7 +1081,7 @@ class ParseException(LineReader reader, String message) extends Exception(messag
 class SchemaException(String message) extends Exception(message) {
 }
 
-"""Formats a [[ValueTable]] using a line oriented format.
+"""Formats a [[MetaTable]] using a line oriented format.
    
    The first line is always `# VALUES`.
    
@@ -1115,13 +1091,22 @@ class SchemaException(String message) extends Exception(message) {
    * a comma (`,`)
    * a datum, as defined by [[DatumParser]]
 """
-class ValueTableWriter(StringBuilder output) {
-    shared void write(ValueTable table) {
+class MetaTableWriter<Item>(StringBuilder output) 
+    given Item satisfies Object {
+    shared void write(MetaTable<Item> table) {
         writeHeader();
         for (id->val in table.rows) {
             output.append(id.string);
-            output.appendCharacter(',');
-            output.append(formatDatum2(table, val));
+            if (isArray(val)) {
+                assert(is List<Anything> val);
+                for (item in val) {
+                    output.appendCharacter(',');
+                    output.append(formatDatum2(item));
+                }
+            } else {
+                output.appendCharacter(',');
+                output.append(formatDatum2(val));
+            }
             output.appendNewline();
         }
     }
@@ -1130,33 +1115,18 @@ class ValueTableWriter(StringBuilder output) {
         output.appendNewline();
     }
     "Formats a datum"
-    String formatDatum2(ValueTable table, ValueTable.Puttable v) {
+    String formatDatum2(Anything v) {
         if (is Reference<Type> v) {
             // TODO do we use @ or do we infer it's a reference from the metamodel
             // (or from the header: id,@person.id)?
             return v.id.string;
         } else {
-            if (is String v) {
-                //assert (false);
-                return "\"``quoteString(v)``\"";
-            } else if (is Integer v) {
-                return v >= 0 then "+``v``" else "``v``";
-            } else if (is Byte v) {
-                return "#``v``"; // TODO hex?
-            } else if (is Float v) {
-                return v >= 0.0 then "+``v``" else "``v``";
-            } else if (is Character v) {
-                return "'``quoteCharacter(v)``'";
-            } else if (is ValueDeclaration v) {
+            if (is ValueDeclaration v) {
                 return "``v.qualifiedName``";
             } else if (is Package v) {
                 return v.qualifiedName;
-            } else if (is FunctionDeclaration v) {
-                return v.name;
             } else if (is ClassOrInterfaceDeclaration v) {
                 return v.name;
-            } else if (is Application v) {
-                return "``v.ctor``(``",".join(v.arguments)``)";
             } else if (is TypeApplication v) {
                 return "``v.generic``<``",".join(v.typeArguments)``>";
             } else if (is Member v) {
@@ -1165,6 +1135,8 @@ class ValueTableWriter(StringBuilder output) {
                 return "|".join(v.cases);
             } else if (is Intersection v) {
                 return "&".join(v.satisfyeds);
+            } else if (is String v) {
+                return quoteString(v);
             }
         }
         throw Exception("unsupported datum type ``type(v)``");
