@@ -23,7 +23,8 @@ import ceylon.language.meta.model {
     Type
 }
 import ceylon.collection {
-    ArrayList
+    ArrayList,
+    HashMap
 }
 import ceylon.language.serialization {
     Reference,
@@ -31,7 +32,7 @@ import ceylon.language.serialization {
 }
 
 abstract class DatumTokenType(shared actual String string)
-        of dtAnd | dtOr | dtDot | dtComma | dtDColon | dtGt | dtLt | dtLParen | dtRParen | dtDQuote | dtSQuote | dtPlus | dtMinus | dtHash | dtDollar | dtDigit | dtAlpha | dtEoi {}
+        of dtAnd | dtOr | dtDot | dtComma | dtDColon | dtGt | dtLt | dtLSq | dtRSq | /*dtLParen | dtRParen |*/ dtDQuote | dtSQuote | dtPlus | dtMinus | dtHash | dtDollar | dtDigit | dtAlpha | dtEoi {}
 
 object dtAnd extends DatumTokenType("&") {}
 object dtOr extends DatumTokenType("|") {}
@@ -40,8 +41,10 @@ object dtComma extends DatumTokenType(",") {}
 object dtDColon extends DatumTokenType("::") {}
 object dtGt extends DatumTokenType(">") {}
 object dtLt extends DatumTokenType("<") {}
-object dtLParen extends DatumTokenType("(") {}
-object dtRParen extends DatumTokenType(")") {}
+object dtLSq extends DatumTokenType("[") {}
+object dtRSq extends DatumTokenType("]") {}
+//object dtLParen extends DatumTokenType("(") {}
+//object dtRParen extends DatumTokenType(")") {}
 object dtDQuote extends DatumTokenType("\"") {}
 object dtSQuote extends DatumTokenType("'") {}
 object dtPlus extends DatumTokenType("+") {}
@@ -80,12 +83,18 @@ class DatumTokenizer(input) {
             case ('>') {
                 return Token(dtGt, char.string, ii);
             }
-            case ('(') {
+            case ('[') {
+                return Token(dtLSq, char.string, ii);
+            }
+            case (']') {
+                return Token(dtRSq, char.string, ii);
+            }
+            /*case ('(') {
                 return Token(dtLParen, char.string, ii);
             }
             case (')') {
                 return Token(dtRParen, char.string, ii);
-            }
+            }*/
             case ('"') {
                 return Token(dtDQuote, char.string, ii);
             }
@@ -151,15 +160,18 @@ class DatumTokenizer(input) {
    emitted by [[ValueTableWriter]] and read by [[ValueTableReader]]. 
    The following grammar is parsed: 
  
-       input ::= constant
-       constant ::= string | character | number | byte | meta
+       input ::= ::= value | meta
+       value ::= string | character | number | byte | ref | array
        string ::= '\"' escapedCharacter* '\"'
        character ::= '\\'' escapedCharacter '\\''
        number ::= ('+'|'-') digits (('.') digits ('E' ('+'|'-') digits )?)?
        digits ::= ('0'-'9')*;
        byte ::= '#' hexDigit*
+       
+       array ::= '[' valueList? ']'
+       valueList ::= value (',' value)*
  
-       meta ::= package | declaration | model | application | ref
+       meta ::= package | declaration | model | application 
  
        package ::= ident ('.' ident)*;
        ref ::= ident
@@ -171,17 +183,14 @@ class DatumTokenizer(input) {
        typeArgumentList ::= type (',' type)*
        type ::= intersectionType;
        intersectionType ::= unionType ('&' unionType)*
-       unionType ::= model ('&' model)* 
- 
-       application ::= ident '(' argumentList? ')'
-       argumentList ::= ident (',' ident)*
+       unionType ::= model ('&' model)*
  """
-class DatumParser(Map<Id,String> table) {
-    shared Anything input(String input) {
-        value tokenizer = DatumTokenizer(input);
-        return constant(tokenizer);
+class DatumParser(Map<Id,Object> table) {
+    shared Anything parse(String datum) {
+        value tokenizer = DatumTokenizer(datum);
+        return input(tokenizer);
     }
-    Anything constant(DatumTokenizer tokenizer) {
+    Anything input(DatumTokenizer tokenizer) {
         value ct = tokenizer.current.type;
         switch (ct)
         case (dtDQuote) {
@@ -195,6 +204,9 @@ class DatumParser(Map<Id,String> table) {
         }
         case (dtHash) {
             return byte(tokenizer);
+        }
+        case (dtLSq) {
+            return array(tokenizer);
         }
         case (dtDigit, dtAlpha) {
             return meta(tokenizer);
@@ -325,10 +337,10 @@ class DatumParser(Map<Id,String> table) {
             // XXX not all model things are generic, e.g. value
             return typeApplication(ident, tokenizer);
         }
-        case (dtLParen) {
+        /*case (dtLParen) {
             //application
             return application(ident, tokenizer);
-        }
+        }*/
         else {
             throw Exception("unexpected token ``tokenizer.current``");
         }
@@ -410,7 +422,7 @@ class DatumParser(Map<Id,String> table) {
         } else if (is GenericDeclaration callable) {
             throw Exception("unexpected kind of generic declaration ``callable``");
         } else {
-            throw Exception("expected a generic declaration ``callable``");
+            throw Exception("expected a generic declaration `` callable else "null" ``");
         }
     }
     "typeArgumentList ::= '<' ident (',' ident)* '>'"
@@ -427,7 +439,18 @@ class DatumParser(Map<Id,String> table) {
         }
         return args.sequence();
     }
-    "application ::= ident '(' argumentList? ')'"
+    
+    Reference<List<Anything>>[] array(DatumTokenizer tokenizer) {
+        assert (tokenizer.current.type == dtLSq);
+        tokenizer.consume();
+        while (tokenizer.current.type != dtRSq) {
+            // I know it's an Array. I'll need to know what it's an array of
+            // then I can create the reference
+            identifier(tokenizer);
+        }
+    }
+    
+    /*"application ::= ident '(' argumentList? ')'"
     Anything application(String ident, DatumTokenizer tokenizer) {
         assert (tokenizer.current.type == dtLParen);
         value functional = table.get(ident);
@@ -439,7 +462,7 @@ class DatumParser(Map<Id,String> table) {
         } else if (is Applicable functional) {
             return functional.apply(*arguments);
         } else {
-            throw Exception("expected a function declaration, class declaration, or an applicable model: ``functional``");
+            throw Exception("expected a function declaration, class declaration, or an applicable model: `` functional else "null" ``");
         }
     }
     "argumentList ::= '(' ident (',' ident)* ')'"
@@ -453,7 +476,7 @@ class DatumParser(Map<Id,String> table) {
             args.add(table.get(identifier(tokenizer)));
         }
         return args.sequence();
-    }
+    }*/
     /*
     Generic typeApply(GenericDeclaration g, DatumTokenizer tokenizer) {
         value tas = typeArguments(tokenizer);
@@ -471,45 +494,42 @@ class DatumParser(Map<Id,String> table) {
 
 void testDatumParser() {
     object die {}
-    value sc = serialization();
-    value alloc = IdAllocator();
-    Reference<Object?> enlist(Anything instance) => sc.reference(alloc.allocateId(instance of Object?), instance of Object?);
-    value ct = ValueTable(alloc, enlist);
+    value ct = HashMap<String,Object>();
     value p = DatumParser(ct);
-    assert (123 == (p.input("+123") else die));
-    assert (-1 == (p.input("-1") else die));
-    assert (0.5 == (p.input("+0.5") else die));
-    assert (0.0 == (p.input("+0.0") else die));
-    assert (-0.0 == (p.input("-0.0") else die)); // TODO proper test for -0.0, Inf, -Inf, NaN
-    assert (-1.0E1 == (p.input("-1.0E1") else die));
+    assert (123 == (p.parse("+123") else die));
+    assert (-1 == (p.parse("-1") else die));
+    assert (0.5 == (p.parse("+0.5") else die));
+    assert (0.0 == (p.parse("+0.0") else die));
+    assert (-0.0 == (p.parse("-0.0") else die)); // TODO proper test for -0.0, Inf, -Inf, NaN
+    assert (-1.0E1 == (p.parse("-1.0E1") else die));
     
-    assert (#ff.byte == (p.input("#ff") else die));
-    assert (#ff.byte == (p.input("#fff") else die));
+    assert (#ff.byte == (p.parse("#ff") else die));
+    assert (#ff.byte == (p.parse("#fff") else die));
     
-    assert ("hello" == (p.input("\"hello\"") else die));
-    assert ("" == (p.input("\"\"") else die));
-    assert ("hello" == (p.input("\"hello\"") else die));
-    assert ("\"hello\"" == (p.input("\"\\{#22}hello\\{#22}\"") else die));
+    assert ("hello" == (p.parse("\"hello\"") else die));
+    assert ("" == (p.parse("\"\"") else die));
+    assert ("hello" == (p.parse("\"hello\"") else die));
+    assert ("\"hello\"" == (p.parse("\"\\{#22}hello\\{#22}\"") else die));
     // TODO parsing characters
     
     // reference
-    assert ("123a" == (p.input("123a") else die));
+    assert ("123a" == (p.parse("123a") else die));
     //package
-    assert (`package ceylon.language` == (p.input("ceylon.language") else die));
+    assert (`package ceylon.language` == (p.parse("ceylon.language") else die));
     
-    String cl = ct.add(`package ceylon.language`);
-    assert (`class String` == (p.input("``cl``::String") else die));
-    assert (`function sequence` == (p.input("``cl``::sequence") else die));
-    assert (`value null` == (p.input("``cl``::null") else die));
+    ct.put("1", `package ceylon.language`);
+    assert (`class String` == (p.parse("1::String") else die));
+    assert (`function sequence` == (p.parse("1::sequence") else die));
+    assert (`value null` == (p.parse("1::null") else die));
     // XXX do we want null or the ValueDeclaration of null?
     // compare: function application, where we get the value when we call () the function 
-    assert (`value String.size` == (p.input("``cl``::String.size") else die));
-    assert (`function String.trim` == (p.input("``cl``::String.trim") else die));
-    assert (`value List.first` == (p.input("``cl``::List.first") else die));
-    value stringId = ct.add(`String`);
-    value sequenceId = ct.add(`function sequence`);
-    value listId = ct.add(`interface List`);
-    value entryId = ct.add(`class Entry`);
-    value integerId = ct.add(`Integer`);
-    assert (`String->Integer` == (p.input("``entryId``<``stringId``,``integerId``>") else die));
+    assert (`value String.size` == (p.parse("1::String.size") else die));
+    assert (`function String.trim` == (p.parse("1::String.trim") else die));
+    assert (`value List.first` == (p.parse("`1::List.first") else die));
+    ct.put("2", `String`);
+    ct.put("3", `function sequence`);
+    ct.put("4", `interface List`);
+    ct.put("5", `class Entry`);
+    ct.put("6", `Integer`);
+    assert (`String->Integer` == (p.parse("5<2,6>") else die));
 }

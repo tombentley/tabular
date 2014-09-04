@@ -53,7 +53,7 @@ import ceylon.collection {
     LinkedList
 }
 
-"The *fundemental types* that are also value types."
+"The *fundemental* types that are also value types."
 alias FundementalValueType => String|Character|Integer|Float|Byte;
 
 "Whether the given instance is a `ceylon.language::Array`."
@@ -61,13 +61,17 @@ Boolean isArray(Anything instance) {
     // this is lame but because Array is invariant there's no 
     // type we can use to test for array-ness
     
-    return instance is List<Anything>// shortcircuit
+    return instance is List<Anything> // shortcircuit
             && type(instance).declaration.qualifiedName == "ceylon.language::Array";
 }
 
 "Whether the given instance is *fundemental*. 
  An instance is fundemental if it cannot be decomposed 
- in terms of its attributes."
+ in terms of its attributes, that is, is of type
+ 
+ * `String`, `Character`, `Integer`, `Float `or `Byte`, or
+ * Array<`T`> for some `T`
+ "
 Boolean isFundementalType(Anything instance) {
     if (instance is FundementalValueType) {
         return true;
@@ -98,10 +102,17 @@ Boolean isObjectDeclaration(Anything instance) {
     return getObjectValueDeclaration(instance) exists;
 }
 
-"Whether the given instance can be serialized."
+"Whether the given instance can be serialized. 
+ An instance can be serialized if it:
+ 
+ * is `Identifiable` and annotated `serializable` or
+ * is an object declaration or
+ * is an instance a [[fundemental type|isFundementalType]]
+ * is an `ArraySequence`
+ "
 Boolean isSerializable(Anything thing) {
     if (thing is Identifiable
-    || thing is ArraySequence<Anything> ) {
+                || thing is ArraySequence<Anything>) {
         // it can be decomposed
         return true; // TODO and is annotated serializable
     } else if (thing is FundementalValueType) {
@@ -117,6 +128,8 @@ Boolean isSerializable(Anything thing) {
     }
 }
 
+"The type arguments of the given Generic instance, in declaration order."
+// see ceylon.language#544
 Type[] typeArguments(Generic g) {
     TypeParameter[] tps;
     if (is ClassOrInterface g) {
@@ -131,7 +144,17 @@ Type[] typeArguments(Generic g) {
 
 "Every instance will be identified by a unique `String`, 
  but let's use an alias for clarity."
-alias Id => String;
+//alias Id => String;
+class Id(shared actual String string) {
+    shared actual Boolean equals(Object other) {
+        if (is Id other) {
+            return this.string == other.string;
+        } else {
+            return false;
+        }
+    }
+    shared actual Integer hash => string.hash;
+}
 
 "Generates ids from the characters in the given alphabet.
  Yields all 1 character ids then all 2 character ids etc."
@@ -154,7 +177,7 @@ class IdGenerator(String alphabet = "0123456789" +
         return null;
     }
     "Yields the next id."
-    shared String next() {
+    shared Id next() {
         if (exists digit = alphabet[++index]) {
             digits.set(0, digit);
         } else {
@@ -173,7 +196,7 @@ class IdGenerator(String alphabet = "0123456789" +
             }
         }
         
-        return "".join(digits.reversed);
+        return Id("".join(digits.reversed));
     }
 }
 
@@ -198,14 +221,14 @@ class IdAllocator() {
     shared actual String string {
         value sb = StringBuilder();
         sb.appendCharacter('{');
-        if (exists nid=nullId) {
-            sb.append("null->").append(nid);
+        if (exists nid = nullId) {
+            sb.append("null->").append(nid.string);
         }
         for (inst->id in valueIds) {
-            sb.append(inst.string).append("->").append(id);
+            sb.append(inst.string).append("->").append(id.string);
         }
         for (inst->id in ids) {
-            sb.append(inst.string).append("->").append(id);
+            sb.append(inst.string).append("->").append(id.string);
         }
         sb.appendCharacter('}');
         return sb.string;
@@ -290,7 +313,7 @@ class Intersection(shared Id[] satisfyeds) extends Object() {
     shared actual Integer hash => satisfyeds.hash;
 }
 "Representation of a member access within a [[MetaTable]]"
-class Member(shared Id pck, shared [Id+] members) extends Object() {
+class Member(shared Id pck, shared [String+] members) extends Object() {
     shared actual Boolean equals(Object other) {
         if (is Member other) {
             return pck == other.pck && members == other.members;
@@ -312,134 +335,93 @@ class TypeApplication(shared Id generic, shared [Id*] typeArguments) extends Obj
     shared actual Integer hash => generic.hash + typeArguments.hash;
 }
 
-alias MetaValue=>Package|Member|TypeApplication|Union|Intersection|ClassDeclaration|ValueDeclaration|Type;
+alias MetaValue => Package|Member|TypeApplication|Union|Intersection|ClassDeclaration|ValueDeclaration|Type|String|Id[];
 
-"Holds meta information about types and values (but not functions). 
+/*"Holds meta information about types and values (but not functions). 
  This table has the special property that it only refers to things also 
  in the meta table, and nothing in other tables."
-class MetaTable<Puttable>(IdAllocator allocator /*, Reference<Object?> enlist(Anything instance)*/)
+class MetaTable<Puttable>()
         given Puttable satisfies Object {
     
     "Underlying map"
-    HashMap<Id,Puttable> data = HashMap<Id,Puttable>();
-    
-    Id alloPut(Puttable cls) {
-        value clsId = allocator.allocateId(cls);
-        data.put(clsId, cls);
-        return clsId;
-    }
-    Id putOrEnlist(Anything o) {
-        /*if (!isValue(o)) {
-            assert (is Id id = enlist(o).id);
-            return id;
-        } else {*/
-        assert (is Puttable item = o);
-        return alloPut(item);
-        //}
-    }
-    Id package_(Package p) {
-        assert (is Puttable p);
-        return alloPut(p);
-    }
-    Id valueDeclaration(ValueDeclaration vd) {
-        if (is Package p = vd.container) {
-            assert (is Puttable member = Member(package_(p), [vd.name]));
-            return alloPut(member);
-        }
-        return nothing; // TODO attributes
-    }
-    Id classOrInterfaceDeclaration(ClassOrInterfaceDeclaration cd) {
-        if (is Package p = cd.container) {
-            assert (is Puttable member = Member(package_(p), [cd.name]));
-            return alloPut(member);
-        }
-        return nothing; // TODO member classes
-    }
-    Id type_(Type ta) {
-        if (is ClassOrInterface ta) {
-            return classOrInterface(ta);
-        } else if (is UnionType ta) {
-            assert (is Puttable union = Union(ta.caseTypes.collect(type_)));
-            return alloPut(union);
-        } else if (is IntersectionType ta) {
-            assert (is Puttable intersection = Intersection(ta.satisfiedTypes.collect(type_)));
-            return alloPut(intersection);
-        } else if (ta == nothingType) {
-            return nothing; //TODO
-        }
-        assert (false); // should be impossible
-    }
-    Id[] typeArguments(Generic g) {
-        return package.typeArguments(g).collect(type_);
-    }
-    Id classOrInterface(ClassOrInterface c) {
-        if (c.typeArguments.empty) {
-            // for non-generic classes let's just record the declaration
-            return classOrInterfaceDeclaration(c.declaration);
-        } else {
-            assert (is Puttable ta = TypeApplication(classOrInterfaceDeclaration(c.declaration), typeArguments(c)));
-            return alloPut(ta);
-        }
-    }
-    
-    "Adds the given [[value|val]] (and all its dependants) to this table."
-    shared Id add(Puttable val) {
-        //assert (isValue(val));
-        
-        if (is ClassOrInterface val) {
-            return classOrInterface(val);
-        } else if (is ValueDeclaration val) {
-            return valueDeclaration(val);
-        }
-        throw;
-    }
+    HashMap<Id,MetaValue> data = HashMap<Id,MetaValue>();
     
     shared Puttable get(Id id) {
-        assert (exists val = data[id]);
+        assert (exists val = data[id],
+            is Puttable val);
         return val;
     }
     
-    shared Map<Id,Puttable> rows => data;
+    shared Map<Id,MetaValue> rows => data;
 }
+*/
+abstract class Unset() of unset {}
 
 """A unit type used to know that a value has been set in a `Table.Row`  
    (we can't use null, because that's a valid "value" which could be set).
    """
-object unset {
+object unset extends Unset() {
     shared actual String string => "?";
 }
 
+class ArrayTable() {
+    HashMap<Id,Row> data = HashMap<Id,Row>();
+    shared Map<Id,Row> rows => data;
+    shared class Row(size) {
+        "The number of elements in the array"
+        shared Integer size;
+        "Storage for the type argument (the first element) 
+         and the array elements."
+        value values = arrayOfSize<Id|FundementalValueType?>(size + 1, null);
+        "The array's type argument"
+        shared Id typeArgument {
+            assert (is Id ta = values[0]);
+            return ta;
+        }
+        assign typeArgument {
+            values.set(0, typeArgument);
+        }
+        
+        shared void setValue(Integer index, Id|FundementalValueType datum) {
+            values.set(index + 1, datum);
+        }
+        
+        shared Id|FundementalValueType getValue(Integer index) {
+            assert (exists id = values.get(index + 1));
+            return id;
+        }
+    }
+    shared void addRow(Id id, Row row) {
+        data.put(id, row);
+    }
+}
+
 "A table made up of rows. 
- Each table holds attribute values of the given [[classModel]] 
- for a number of [[Id]]-identified instances."
-class Table(classModel, superModel, cols) {
-    shared ClassModel classModel;
+ Each table holds attribute values of the given [[classDeclaration]] 
+ for a number of [[Id]]-identified instances.
+ 
+ We record the superclass model so we know what the reified type 
+ parameters held in superclasses are."
+class Table(classDeclaration, typeParameters, superModel, columns) {
     "The class whose state this table serializes"
-    shared ClassDeclaration classDeclaration => classModel.declaration;
+    shared Id classDeclaration;
     
-    "The superclass of the classDeclaration at the time the data was serialized*."
-    shared ClassModel? superModel;
+    "The superclass of the classDeclaration 
+     *at the time the data was serialized*,
+     or null if the superclass was `Basic` or `Object`."
+    shared Id? superModel;
     
-    "The superclass of the classDeclaration at the time the data was serialized*."
-    shared ClassDeclaration? superDeclaration => superModel?.declaration;
+    //"The superclass of the classDeclaration at the time the data was serialized*."
+    //shared ClassDeclaration? superDeclaration => superModel?.declaration;
     
-    shared List<TypeParameter> typeParameters => classDeclaration.typeParameterDeclarations;
-    
-    // TODO abstract?
+    shared List<TypeParameter> typeParameters; // => classDeclaration.typeParameterDeclarations;
     
     "The mapping of column index to attribute."
-    List<ValueDeclaration> cols;
-    
-    "The mapping of attribute to column index."
-    MutableMap<ValueDeclaration,Integer> schema = HashMap<ValueDeclaration,Integer>();
-    variable value ii = 0;
-    for (vd in cols) {
-        schema.put(vd, ii);
-        ii++;
+    shared List<ValueDeclaration> columns;
+    value schema = HashMap<ValueDeclaration,Integer>();
+    for (index->vd in columns.indexed) {
+        schema.put(vd, index);
     }
-    
-    "The columns in this table."
-    shared List<ValueDeclaration> columns = cols;
     
     HashMap<Id,Row> data = HashMap<Id,Row>();
     shared Map<Id,Row> rows => data;
@@ -452,15 +434,12 @@ class Table(classModel, superModel, cols) {
         "The Table this Row is (or will be) a row of."
         shared Table table => outer;
         
-        ArrayList<Object> typeArguments_ = ArrayList<Object>();
+        value typeArguments_ = ArrayList<Id?>();
         for (tp in typeParameters) {
-            typeArguments_.add(unset);
+            typeArguments_.add(null);
         }
         
-        ArrayList<Object?> values = ArrayList<Object?>();
-        for (vd in schema.keys) {
-            values.add(unset);
-        }
+        value values = arrayOfSize<Id|FundementalValueType?>(schema.size, null);
         
         Integer tpIndex(TypeParameter tp) {
             variable value index = 0;
@@ -473,33 +452,33 @@ class Table(classModel, superModel, cols) {
             throw Exception("type parameter not found: ``tp`` in ``classDeclaration``");
         }
         
-        shared void setTypeArgument(TypeParameter tp, String className) {
+        shared void setTypeArgument(TypeParameter tp, Id className) {
             variable value index = tpIndex(tp);
             typeArguments_.set(index, className);
         }
         
-        shared String getTypeArgument(TypeParameter tp) {
+        shared Id getTypeArgument(TypeParameter tp) {
             variable value index = tpIndex(tp);
             assert (exists ta = typeArguments_[index]);
-            assert (ta != unset);
-            assert (is String ta);
             return ta;
         }
         
-        shared void setValue(ValueDeclaration vd, Id datum) {
+        shared void setValue(ValueDeclaration vd, Id|FundementalValueType datum) {
             assert (exists index = schema[vd]);
             // TODO check that the type of val is a subtype of the type of vd
             values.set(index, datum);
         }
-        shared Object? getValue(ValueDeclaration vd) {
+        shared FundementalValueType|Id getValue(ValueDeclaration vd) {
             if (exists index = schema[vd],
                 0 <= index < values.size) {
-                Object? datum = values[index];
-                if (exists datum,
-                    datum == unset) {
+                value datum = values[index];
+                switch (datum)
+                case (is Null) {
                     throw Exception("value not yet set: ``vd``");
                 }
-                return datum;
+                case (is Reference<Anything>|FundementalValueType|Id) {
+                    return datum;
+                }
             } else {
                 throw Exception("value declaration not in table schema: ``vd``");
             }
@@ -518,23 +497,25 @@ class Table(classModel, superModel, cols) {
             }
             i = 0;
             for (datum in values) {
-                if (exists datum,
-                    datum == unset) {
+                if (!datum exists) {
                     return columns[i];
                 }
                 i++;
             }
             return null;
         }
-        shared {String*} typeArguments {
-            return typeArguments_.map(function(Object o) {
-                    assert (is String o);
+        shared {Id*} typeArguments {
+            return typeArguments_.map(function(Id? o) {
+                    assert (exists o);
                     return o;
                 });
         }
         
         "The data in this row, in the same order as [[outer.columns"
-        shared {Object?*} data => values;
+        shared {Id|FundementalValueType*} data => values.map(function(datum) {
+                assert (is Id|FundementalValueType datum);
+                return datum;
+            });
     }
     
     "Adds a row for the instance with the given id to the table."
@@ -548,7 +529,7 @@ class Table(classModel, superModel, cols) {
     "The row for the instances with the given id"
     shared Row? get(Id id) => data[id];
     
-    shared actual String string => "Table(``classDeclaration``, `` superDeclaration else "null" ``, ``columns``)";
+    shared actual String string => "Table(``classDeclaration``, `` superModel else "null" ``, ``columns``)";
 }
 
 "Quotes the characters in the given string. Does not enclose in double quotes."
@@ -629,36 +610,6 @@ Character? unquoteCharacter(String hex, Integer start = 0, Integer end = hex.siz
     return codepoint?.character;
 }
 
-"Formats a datum"
-String formatDatum<Type>(Type|Reference<Type> v) {
-    if (is Reference<Type> v) {
-        // TODO do we use @ or do we infer it's a reference from the metamodel
-        // (or from the header: id,@person.id)?
-        assert (false);
-        //return v.id.string;
-    } else {
-        if (is Id v) {
-            
-            return v; //"\"``quoteString(v)``\"";
-        } else if (is Integer v) {
-            return "``v``";
-        } else if (is Byte v) {
-            return "b``v``";
-        } else if (is Character v) {
-            return "'``quoteCharacter(v)``'";
-        } else if (is Float v) {
-            return v.string;
-        } else {
-            /*value valueType = type(v);
-            if (valueType.declaration.anonymous
-                        && valueType.declaration.toplevel) {
-                return valueType.declaration.qualifiedName;
-            } else {*/
-            throw Exception("unsupported datum type ``type(v)``");
-            //}
-        }
-    }
-}
 
 // TODO Get rid of this
 "The top level object declaration corresponding to the 
@@ -732,7 +683,61 @@ Object? parseDatum(String datum, ValueDeclaration vd) {
     }
 }
 
-class TableWriter(StringBuilder output) {
+abstract class Writer() {
+    "Formats a datum"
+    see (`class DatumParser`)
+    shared String formatDatum(Id|FundementalValueType|MetaValue|Id[] v) {
+        if (is Id v) {
+            return v.string;
+        } else if (is FundementalValueType v) {
+            switch (v)
+            case (is String) {
+                return "\"``quoteString(v)``\"";
+            }
+            case (is Character) {
+                return "'``quoteCharacter(v)``'";
+            }
+            case (is Integer) {
+                if (v.positive || v.zero) {
+                    return "+``v``";
+                } else {
+                    return v.string;
+                }
+            }
+            case (is Float) {
+                if (v.positive) {
+                    return "+``v``";
+                } else {
+                    return v.string;
+                }
+            }
+            case (is Byte) {
+                return "#``formatInteger(v.unsigned, 16)``";
+            }
+        } else {
+            if (is ValueDeclaration v) {
+                return "``v.qualifiedName``";
+            } else if (is Package v) {
+                return v.qualifiedName;
+            } else if (is ClassOrInterfaceDeclaration v) {
+                return v.name;
+            } else if (is TypeApplication v) {
+                return "``v.generic``<``",".join(v.typeArguments)``>";
+            } else if (is Member v) {
+                return "``v.pck``::``".".join(v.members)``";
+            } else if (is Union v) {
+                return "|".join(v.cases);
+            } else if (is Intersection v) {
+                return "&".join(v.satisfyeds);
+            } else if (is Id[] v) {
+                return "[``",".join(v)``]";
+            }
+        }
+        throw Exception("unsupported datum type ``type(v)``");
+    }
+}
+
+class TableWriter(StringBuilder output) extends Writer() {
     shared void write(Table table) {
         writeHeader(table);
         for (id->row in table.rows) {
@@ -741,7 +746,7 @@ class TableWriter(StringBuilder output) {
     }
     void writeHeader(Table table) {
         // TODO abstractness?
-        output.append("# ``table.classModel``");
+        output.append("# ``table.classDeclaration``");
         if (exists sc = table.superModel) {
             output.append(" extends ``sc``");
         }
@@ -756,12 +761,12 @@ class TableWriter(StringBuilder output) {
         output.appendNewline();
     }
     void writeRow(Id id, Table.Row row) {
-        output.append(id.string);
-        for (String ta in row.typeArguments) {
+        output.append(formatDatum(id));
+        for (ta in row.typeArguments) {
             output.appendCharacter(',');
-            output.append(ta);
+            output.append(formatDatum(ta));
         }
-        for (Object? datum in row.data) {
+        for (datum in row.data) {
             output.appendCharacter(',');
             output.append(formatDatum(datum));
         }
@@ -769,14 +774,125 @@ class TableWriter(StringBuilder output) {
     }
 }
 
+"""Formats a [[MetaTable]] using a line oriented format.
+   
+   The first line is always `# VALUES`.
+   
+   All other lines consist of:
+   
+   * an identifier (matching `[0-9A-Za-z]+`)
+   * a comma (`,`)
+   * a datum, as defined by [[DatumParser]]
+   """
+class MetaTableWriter(StringBuilder output) extends Writer() {
+    shared void write(Map<Id,MetaValue> metaData, String name) {
+        writeHeader(name);
+        for (id->val in metaData) {
+            output.append(formatDatum(id));
+            if (isArray(val)) {
+                assert (is List<MetaValue> val);
+                for (item in val) {
+                    output.appendCharacter(',');
+                    output.append(formatDatum(item));
+                }
+            } else {
+                output.appendCharacter(',');
+                output.append(formatDatum(val));
+            }
+            output.appendNewline();
+        }
+    }
+    void writeHeader(String name) {
+        output.append("## ``name``");
+        output.appendNewline();
+    }
+}
+
+class ArrayTableWriter(Id arrayClassId, StringBuilder output) extends Writer() {
+    shared void write(ArrayTable table) {
+        output.append("# ``arrayClassId``").appendNewline();
+        output.append("# =id,<Element>,...").appendNewline();
+        for (id->row in table.rows) {
+            output.append(formatDatum(id));
+            output.appendCharacter(',');
+            output.append(formatDatum(row.typeArgument));
+            for (index in 0:row.size) {
+                output.appendCharacter(',');
+                output.append(formatDatum(row.getValue(index)));
+            }
+            output.appendNewline();
+        }
+    }
+}
+
+class MetaData(shared HashMap<Id,MetaValue> metaData, IdAllocator allocator, Reference<Object?> enlist(Anything instance)) {
+    Id alloPut(MetaValue cls) {
+        value clsId = allocator.allocateId(cls);
+        metaData.put(clsId, cls);
+        return clsId;
+    }
+    Id putOrEnlist(Anything o) {
+        if (!isFundementalType(o)) {
+            assert (is Id id = enlist(o).id);
+            return id;
+        } else {
+            assert (is MetaValue item = o);
+            return alloPut(item);
+        }
+    }
+    Id package_(Package p) {
+        return alloPut(p);
+    }
+    shared Id valueDeclaration(ValueDeclaration vd) {
+        if (is Package p = vd.container) {
+            return alloPut(Member(package_(p), [vd.name]));
+        }
+        return nothing; // TODO attributes
+    }
+    shared Id classOrInterfaceDeclaration(ClassOrInterfaceDeclaration cd) {
+        if (is Package p = cd.container) {
+            return alloPut(Member(package_(p), [cd.name]));
+        }
+        return nothing; // TODO member classes
+    }
+    shared Id classOrInterface(ClassOrInterface c) {
+        if (c.typeArguments.empty) {
+            // for non-generic classes let's just record the declaration
+            return classOrInterfaceDeclaration(c.declaration);
+        } else {
+            return alloPut(TypeApplication(classOrInterfaceDeclaration(c.declaration), typeArguments(c)));
+        }
+    }
+    shared Id type_(Type ta) {
+        if (is ClassOrInterface ta) {
+            return classOrInterface(ta);
+        } else if (is UnionType ta) {
+            return alloPut(Union(ta.caseTypes.collect(type_)));
+        } else if (is IntersectionType ta) {
+            return alloPut(Intersection(ta.satisfiedTypes.collect(type_)));
+        } else if (ta == nothingType) {
+            return nothing; //TODO
+        }
+        assert (false); // should be impossible
+    }
+    Id[] typeArguments(Generic g) {
+        return package.typeArguments(g).collect(type_);
+    }
+    shared Id array(List<Anything> val) {
+        Id[] ids = val.collect(putOrEnlist);
+        return alloPut(ids);
+    }
+    shared Id str(String val) => alloPut(val);
+}
 
 "Provides a facility for serializing instances to a `String`."
-shared class TabularSerializer() {
+shared class TabularSerializer(Boolean inlineString = true) {
     
     SerializationContext context = serialization();
-    MutableMap<ClassModel,Table> tables = HashMap<ClassModel,Table>();
     value allocator = IdAllocator();
     
+    MutableMap<ClassModel,Table> tables = HashMap<ClassModel,Table>();
+    ArrayTable arrayTable = ArrayTable();
     "Queue of instances waiting to be serialized"
     Queue<SerializableReference<Object?>> instances = LinkedList<SerializableReference<Object?>>();
     
@@ -787,9 +903,9 @@ shared class TabularSerializer() {
              if it's not been added yet, returns its id."
     SerializableReference<Object?> enlist(Anything instance) {
         assert (is Object? instance);
-        Boolean x = !allocator.idAllocated(instance);
+        Boolean notAllocated = !allocator.idAllocated(instance);
         Id id = allocator.allocateId(instance);
-        if (x) {
+        if (notAllocated) {
             value reference = context.reference(id, instance);
             instances.offer(reference);
             anotherFuckingMap.put(id, reference);
@@ -799,16 +915,17 @@ shared class TabularSerializer() {
         return r;
     }
     
-    value metaTable = MetaTable<MetaValue>(allocator);
-    MetaTable<String>? stringTable = MetaTable<String>(allocator);
-    value arrayTable = MetaTable<Array<in Anything>>(allocator);
+    "Meta data necessary to describe classes and 
+     references to object declarations."
+    value metaData = MetaData(HashMap<Id,MetaValue>(), allocator, enlist);
     
     class TabularDeconstructor() satisfies Deconstructor {
-        variable Id id = "";
+        variable Id id = Id("");
         shared variable ClassModel? classModel = null;
         shared variable ClassModel? currentClass = null;
-        variable value typeParameters = ArrayList<[TypeParameter, String]>();
-        variable value values = ArrayList<[ValueDeclaration, Id]>();
+        variable value typeParameters = ArrayList<[TypeParameter, Id]>();
+        variable value values = ArrayList<[ValueDeclaration, Id|FundementalValueType]>();
+        variable value elements = ArrayList<Id|FundementalValueType>();
         
         "Called when we start inspecting an instance"
         shared void beginInstance(Id id, Object? instance) {
@@ -829,41 +946,60 @@ shared class TabularSerializer() {
             // Here I can check that all the rows in all the tables have been populated
             finishRow();
         }
+        "Whether the given value should be added to the table row *inline*, 
+         or via a reference. Only values of [[FundementalValueType]] can be included inline."
+        Boolean inline<Type>(Type val) {
+            return inlineString;
+        }
         
         shared actual void putValue<Type>(ValueDeclaration attribute, Type referenced) {
-            ValueDeclaration? a = attribute;
-            print("``type(referenced)``: ``a else "???"`` =  ``referenced else "null"``");
             Object? ref = referenced of Object?;
             if (exists vd = getObjectValueDeclaration(ref)) {
                 // it's an object declaration, so add it to the meta table
-                values.add([attribute, metaTable.add(vd)]);
+                values.add([attribute, metaData.valueDeclaration(vd)]);
             } else {
-                /* TODO in general other serialization libraries would 
-                        use annotations to know which references 
-                        they follow */
-                
-                // need an id, so we can put that
-                assert (is Id id = enlist(ref).id);
-                values.add([attribute, id]);
+                if (inline(ref), is FundementalValueType ref) {
+                    values.add([attribute, ref]);
+                } else {
+                    assert (is Id id = enlist(ref).id);
+                    values.add([attribute, id]);
+                }
             }
         }
         shared actual void putElement<Type>(Integer index, Type referenced) {
+            Object? ref = referenced of Object?;
+            if (exists vd = getObjectValueDeclaration(ref)) {
+                // it's an object declaration, so add it to the meta table
+                elements.add(metaData.valueDeclaration(vd));
+            } else {
+                if (inline(ref), is FundementalValueType ref) {
+                    elements.add(ref);
+                } else {
+                    assert (is Id id = enlist(ref).id);
+                    elements.add(id);
+                }
+            }
         }
         
         shared actual void putTypeArgument(TypeParameter typeParameter, Type argument) {
             //values.add([attribute, metaTable.add(vd)]);
             //typeParameters.add([typeParameter, argument.string]);
-            typeParameters.add([typeParameter, metaTable.add(argument)]);
+            typeParameters.add([typeParameter, metaData.type_(argument)]);
         }
         "Gets the table for the given class, creating it if necessary. 
          Note this can only be called after all the values have been added
          otherwise we don't know the schema of the table."
-        Table getOrCreateTable(ClassModel cc) {
+        Table|ArrayTable getOrCreateTable(ClassModel cc) {
+            if (cc.declaration == `class Array`) {
+                return arrayTable;
+            }
             Table table;
             if (exists t = tables[cc]) {
                 table = t;
             } else {
-                table = Table(cc, cc.extendedType,
+                assert (is ClassModel s = cc.extendedType);
+                table = Table(metaData.classOrInterfaceDeclaration(cc.declaration), cc.declaration.typeParameterDeclarations,
+                    s != `Object` && s != `Basic` then metaData.classOrInterface(s) else null,
                     { for (tup in values) tup[0] }.sequence());
                 tables.put(cc, table);
             }
@@ -877,25 +1013,48 @@ shared class TabularSerializer() {
                 return;
             }
             assert (exists cc = currentClass);
-            Table table = getOrCreateTable(cc);
-            value row = table.Row();
-            for (tpName in typeParameters) {
+            Table|ArrayTable table = getOrCreateTable(cc);
+            switch (table)
+            case (is Table) {
+                value row = table.Row();
+                for (tpName in typeParameters) {
+                    try {
+                        row.setTypeArgument(tpName[0], tpName[1]);
+                    } catch (Throwable e) {
+                        throw Exception("Problem setting type argument for type parameter ``tpName[0]`` in table ``table`` for class ``cc``, id=``id``", e);
+                    }
+                }
+                for (tup in values) {
+                    try {
+                        row.setValue(tup[0], tup[1]);
+                    } catch (Throwable e) {
+                        throw Exception("Problem setting value for attribute ``tup[0]`` in table ``table`` for class ``cc``, id=``id``", e);
+                    }
+                }
+                table.addRow(id, row);
+            }
+            case (is ArrayTable) {
+                value row = table.Row(elements.size);
+                assert (typeParameters.size == 1,
+                    exists tpName = typeParameters[0]);
                 try {
-                    row.setTypeArgument(tpName[0], tpName[1]);
+                    row.typeArgument = tpName[1];
                 } catch (Throwable e) {
                     throw Exception("Problem setting type argument for type parameter ``tpName[0]`` in table ``table`` for class ``cc``, id=``id``", e);
                 }
-            }
-            for (tup in values) {
-                try {
-                    row.setValue(tup[0], tup[1]);
-                } catch (Throwable e) {
-                    throw Exception("Problem setting value for attribute ``tup[0]`` in table ``table`` for class ``cc``, id=``id``", e);
+                for (index->tup in elements.indexed) {
+                    try {
+                        row.setValue(index, tup);
+                    } catch (Throwable e) {
+                        throw Exception("Problem setting value for element ``tup`` at index ``index`` in table ``table`` for class ``cc``, id=``id``", e);
+                    }
                 }
+                table.addRow(id, row);
             }
-            table.addRow(id, row);
+            
             typeParameters.clear();
             values.clear();
+            elements.clear();
             currentClass = null;
         }
     }
@@ -917,10 +1076,10 @@ shared class TabularSerializer() {
                 if (is FundementalValueType inst) {
                     switch (inst)
                     case (is String) {
-                        if (exists stringTable) {
-                        } else {
-                            // put as literal
-                        }
+                        //if (internStrings) {
+                        metaData.str(inst);
+                        //}
+                        // TODO do what?
                     }
                     case (is Character) {
                     }
@@ -930,11 +1089,10 @@ shared class TabularSerializer() {
                     }
                     case (is Float) {
                     }
-                } else if (isArray(inst)) {
                 } else if (exists vd = getObjectValueDeclaration(inst)) {
-                    metaTable.add(vd);
+                    metaData.valueDeclaration(vd);
                 } else if (isSerializable(inst)) {
-                    value reference = ref; //context.reference(id, inst);
+                    value reference = ref;
                     dtor.beginInstance(id, inst);
                     reference.serialize(dtorFactory);
                     dtor.endInstance();
@@ -951,8 +1109,13 @@ shared class TabularSerializer() {
     shared String write() {
         StringBuilder builder = StringBuilder();
         
-        value ctw = MetaTableWriter<MetaValue>(builder);
-        ctw.write(metaTable);
+        value arrayId = metaData.classOrInterfaceDeclaration(`class Array`);
+        
+        value ctw = MetaTableWriter(builder);
+        ctw.write(metaData.metaData, "META");
+        
+        ArrayTableWriter atw = ArrayTableWriter(arrayId, builder);
+        atw.write(arrayTable);
         
         TableWriter writer = TableWriter(builder);
         for (table in tables.items) {
@@ -1081,74 +1244,16 @@ class ParseException(LineReader reader, String message) extends Exception(messag
 class SchemaException(String message) extends Exception(message) {
 }
 
-"""Formats a [[MetaTable]] using a line oriented format.
-   
-   The first line is always `# VALUES`.
-   
-   All other lines consist of:
-   
-   * an identifier (matching `[0-9A-Za-z]+`)
-   * a comma (`,`)
-   * a datum, as defined by [[DatumParser]]
-"""
-class MetaTableWriter<Item>(StringBuilder output) 
-    given Item satisfies Object {
-    shared void write(MetaTable<Item> table) {
-        writeHeader();
-        for (id->val in table.rows) {
-            output.append(id.string);
-            if (isArray(val)) {
-                assert(is List<Anything> val);
-                for (item in val) {
-                    output.appendCharacter(',');
-                    output.append(formatDatum2(item));
-                }
-            } else {
-                output.appendCharacter(',');
-                output.append(formatDatum2(val));
-            }
-            output.appendNewline();
-        }
-    }
-    void writeHeader() {
-        output.append("# VALUES");
-        output.appendNewline();
-    }
-    "Formats a datum"
-    String formatDatum2(Anything v) {
-        if (is Reference<Type> v) {
-            // TODO do we use @ or do we infer it's a reference from the metamodel
-            // (or from the header: id,@person.id)?
-            return v.id.string;
-        } else {
-            if (is ValueDeclaration v) {
-                return "``v.qualifiedName``";
-            } else if (is Package v) {
-                return v.qualifiedName;
-            } else if (is ClassOrInterfaceDeclaration v) {
-                return v.name;
-            } else if (is TypeApplication v) {
-                return "``v.generic``<``",".join(v.typeArguments)``>";
-            } else if (is Member v) {
-                return "``v.pck``::``".".join(v.members)``";
-            } else if (is Union v) {
-                return "|".join(v.cases);
-            } else if (is Intersection v) {
-                return "&".join(v.satisfyeds);
-            } else if (is String v) {
-                return quoteString(v);
-            }
-        }
-        throw Exception("unsupported datum type ``type(v)``");
-    }
-}
-/*
-class ValueTableReader(LineReader reader) {
-    ValueTable read() {
+class MetaTableReader(LineReader reader) {
+    shared Map<Id,MetaValue> read() {
         // Have we reached eof yet?
         value l = reader.readLine();
         assert (exists l,
-            l == "# VALUES");
+            l == "## META");
+        //IdAllocator allocator, Reference<Object?> enlist(Anything instance)
+        value strings = HashMap<Id,String>();
+        value result = HashMap<Id,MetaValue>();
+        value parser = DatumParser(result);
         while (true) {
             value line = reader.readLine();
             if (exists line) {
@@ -1157,16 +1262,24 @@ class ValueTableReader(LineReader reader) {
                     break;
                 }
                 assert (exists commaIndex = line.firstOccurrence(','));
-                String ident = line[... commaIndex - 1];
-                String datum = line[commaIndex + 1 ...]
+                Id ident = Id(line[... commaIndex - 1]);
+                String datum = line[commaIndex + 1 ...];
+                try {
+                    assert (is MetaValue parsed = parser.parse(datum));
+                    result.put(ident, parsed);
+                } catch (Throwable e) {
+                    throw Exception("problem parsing ``datum`` for id ``ident`` on line ``reader.lineNumber``");
+                }
             } else {
                 throw Exception("unexpected end of stream");
             }
         }
+        
+        return result;
     }
-}*/
+}
 
-class TableReader(LineReader reader, TypeParser typeParser) {
+class TableReader(LineReader reader, Map<Id,MetaValue> metaData) {
     
     "The next table, or null"
     shared Table? read() {
@@ -1178,15 +1291,17 @@ class TableReader(LineReader reader, TypeParser typeParser) {
         reader.unread();
         
         // Read a table
-        [ClassModel, ClassModel?] classAndSuper = parseClassNamesHeader(reader);
-        assert (exists ClassModel cm = classAndSuper.getFromFirst(0)); //XXX compiler bug
-        ClassModel? sm = classAndSuper[1];
-        value tpAttributes = parseColumnNamesHeader(reader, cm.declaration);
+        [Id, ClassDeclaration, Id?, ClassModel?] classAndSuper = parseClassNamesHeader(reader);
+        Id cid = classAndSuper[0];
+        ClassDeclaration cd = classAndSuper[1];
+        Id? sid = classAndSuper[2];
+        ClassModel? sm = classAndSuper[3];
+        value tpAttributes = parseColumnNamesHeader(reader, cd);
         value tps = tpAttributes[0];
         value attributes = tpAttributes[1];
         // TODO check the type parameters in the table match the type parameters in 
         // the class (order and name)
-        Table table = Table(cm, sm, attributes);
+        Table table = Table(cid, cd.typeParameterDeclarations, sid, attributes);
         
         while (true) {
             value line = reader.readLine();
@@ -1210,40 +1325,48 @@ class TableReader(LineReader reader, TypeParser typeParser) {
      followed by the FQ class name of the declaration the 
      table encodes
      
-         # example::Person (extends superclass)?
+         # F (extends G)?
      "
-    [ClassModel, ClassModel?] parseClassNamesHeader(LineReader reader) {
+    [Id, ClassDeclaration, Id?, ClassModel?] parseClassNamesHeader(LineReader reader) {
         // TODO Do I care about abstractness too?
         if (exists line = reader.readLine()) {
             if (!line.startsWith("#")) {
                 throw ParseException(reader, "expected header row");
             }
             String[] parts = line[1...].trimmed.split().sequence();
-            if (exists className = parts[0]) {
+            if (exists cid = parts[0]) {
                 ClassModel? superModel;
-                ClassModel classModel;
+                ClassDeclaration classDeclaration;
+                Id? sid;
                 // super class
-                if (exists superclassName = parts[2]) {
+                if (exists superId = parts[2]) {
                     if (exists ext = parts[1],
                         ext == "extends") {
                     } else {
                         throw ParseException(reader, "expected <class> extends <superclass>");
                     }
-                    if (is ClassModel s = typeParser.parse(superclassName)) {
+                    if (is ClassModel s = metaData.get(superId)) {
                         superModel = s;
+                        sid = Id(superId);
                     } else {
-                        throw SchemaException("``superclassName`` is not a class");
+                        throw SchemaException("``superId`` does not identify a ClassModel in the meta table");
                     }
                 } else {
+                    sid = null;
                     superModel = null;
                 }
                 // the class itself
-                if (is ClassModel cd = typeParser.parse(className)) {
-                    classModel = cd;
+                if (is ClassDeclaration cd = metaData.get(cid)) {
+                    classDeclaration = cd;
                 } else {
-                    throw SchemaException("``className`` is not a class");
+                    throw SchemaException("``cid`` does not identify a ClassDeclaration in the meta table");
                 }
-                return [classModel, superModel];
+                if (exists superModel,
+                    exists s = classDeclaration.extendedType,
+                    s != superModel) {
+                    throw SchemaException("``classDeclaration`` no longer extends ``superModel``");
+                }
+                return [Id(cid), classDeclaration, sid, superModel];
             } else {
                 throw ParseException(reader, "missing class name while reading table header 1");
             }
@@ -1346,18 +1469,26 @@ Boolean isSubclassOf(ClassDeclaration a, ClassDeclaration b) {
 class DbReader(Module mod, LineReader reader) {
     "A map from class to table. This must have iteration order such that 
      more derived classes occur before their super classes, so that 
-     [[idToCd]] gets populated with the concrete class for a given id. 
-     ids identify the instance across all tables, remember."
+     [[idToCd]] gets populated with the instance class for a given id 
+     (rather than some superclass of the instance)."
     HashMap<ClassDeclaration,Table> tables = HashMap<ClassDeclaration,Table>();
     
-    "A map from instance id to the tables in which its state it stored. 
+    "A map from instance id to the tables in which its state is stored. 
      The tables are in most-refined to least refined order."
     HashMap<Id,ClassDeclaration> idToCd = HashMap<Id,ClassDeclaration>();
+    
+    Map<Id,MetaValue> readMeta(LineReader reader) {
+        MetaTableReader mtr = MetaTableReader(reader);
+        return mtr.read();
+    }
+    
+    value metaTable = readMeta(reader);
     
     TypeParser typeParser = TypeParser(mod);
     
     void readTables(LineReader reader) {
-        TableReader tr = TableReader(reader, typeParser);
+        
+        TableReader tr = TableReader(reader, metaTable);
         value tableList = ArrayList<Table>();
         // read the tables from the stream
         while (exists table = tr.read()) {
@@ -1366,14 +1497,16 @@ class DbReader(Module mod, LineReader reader) {
             // each id in the stream woth the most derived class.
             variable value index = 0;
             for (t in tableList) {
-                if (isSubclassOf(t.classDeclaration, table.classDeclaration)) {
+                /*if (isSubclassOf(t.classDeclaration, table.classDeclaration)) {
                     tableList.insert(index + 1, table);
                     break;
                 } else if (isSubclassOf(table.classDeclaration, t.classDeclaration)) {
                     tableList.insert(index, table);
                     break;
                 }
-                index++;
+                
+                index++;*/
+                assert (false);
             } else {
                 tableList.add(table);
             }
@@ -1439,7 +1572,12 @@ class DbReader(Module mod, LineReader reader) {
             cd != `class Object` && cd != `class Basic`) {
             assert (exists t = tables[cd]);
             tabs.add(t);
-            classDecl = t.superDeclaration;
+            if (exists s = t.superModel) {
+                assert (is ClassModel sm = metaTable.get(s));
+                classDecl = sm.declaration;
+            } else {
+                classDecl = null;
+            }
         }
         return tabs;
     }
