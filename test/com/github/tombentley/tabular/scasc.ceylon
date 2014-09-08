@@ -4,6 +4,7 @@ import ceylon.collection {
 import ceylon.language.meta.declaration {
     ValueDeclaration
 }
+/*
 void testFormating() {
     // formatting and quoting
     
@@ -243,3 +244,4 @@ void testDb() {
     assert (2 == ref3[0]);
     assert (`Foo` == ref3[1]);
 }
+*/

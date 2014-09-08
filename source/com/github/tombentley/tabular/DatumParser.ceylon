@@ -20,7 +20,8 @@ import ceylon.language.meta.model {
     Function,
     Value,
     Interface,
-    Type
+    Type,
+    ClassOrInterface
 }
 import ceylon.collection {
     ArrayList,
@@ -185,12 +186,12 @@ class DatumTokenizer(input) {
        intersectionType ::= unionType ('&' unionType)*
        unionType ::= model ('&' model)*
  """
-class DatumParser(Map<Id,Object> table) {
-    shared Anything parse(String datum) {
+class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
+    shared FundementalValueType|MetaValue|Id[]|Id parse(String datum) {
         value tokenizer = DatumTokenizer(datum);
         return input(tokenizer);
     }
-    Anything input(DatumTokenizer tokenizer) {
+    FundementalValueType|MetaValue|Id[]|Id input(DatumTokenizer tokenizer) {
         value ct = tokenizer.current.type;
         switch (ct)
         case (dtDQuote) {
@@ -305,7 +306,7 @@ class DatumParser(Map<Id,Object> table) {
         return int.byte;
     }
     
-    String identifier(DatumTokenizer tokenizer) {
+    Id identifier(DatumTokenizer tokenizer) {
         assert (tokenizer.current.type == dtAlpha
                     || tokenizer.current.type == dtDigit);
         value start = tokenizer.index;
@@ -313,11 +314,11 @@ class DatumParser(Map<Id,Object> table) {
                     || tokenizer.current.type == dtDigit) {
             tokenizer.consume();
         }
-        return tokenizer.input[start .. tokenizer.index - 1];
+        return Id(tokenizer.input[start .. tokenizer.index - 1]);
     }
     
-    Anything meta(DatumTokenizer tokenizer) {
-        String ident = identifier(tokenizer);
+    MetaValue|Id[]|Id meta(DatumTokenizer tokenizer) {
+        Id ident = identifier(tokenizer);
         switch (tokenizer.current.type)
         case (dtEoi) {
             // plain ident, though actually ambiguous wrt a package name of one component
@@ -347,22 +348,22 @@ class DatumParser(Map<Id,Object> table) {
         //return nothing;
     }
     
-    String checkLident(String ident) {
-        if (!(ident[0]?.lowercase else false)) {
+    Id checkLident(Id ident) {
+        if (!(ident.string[0]?.lowercase else false)) {
             throw Exception("illegal package name component: ``ident``");
         }
         return ident;
     }
     
-    String lident(DatumTokenizer tokenizer) => checkLident(identifier(tokenizer));
+    Id lident(DatumTokenizer tokenizer) => checkLident(identifier(tokenizer));
     
-    Package pkg(String ident, DatumTokenizer tokenizer) {
-        variable String pkgName = checkLident(ident);
+    Package pkg(Id ident, DatumTokenizer tokenizer) {
+        variable String pkgName = checkLident(ident).string; // XXX Wrong! and ident is not the same production as a member name
         variable Module? mod = null;
         assert (tokenizer.current.type == dtDot);
         while (tokenizer.current.type == dtDot) {
             tokenizer.consume();
-            pkgName += "." + lident(tokenizer);
+            pkgName += "." + lident(tokenizer).string; // XXX Wrong! and ident is not the same production as a member name
             for (m in modules.list) {
                 if (m.name == pkgName) {
                     mod = m;
@@ -381,14 +382,14 @@ class DatumParser(Map<Id,Object> table) {
         }
     }
     
-    NestableDeclaration member(String pident, DatumTokenizer tokenizer) {
+    ClassDeclaration|ValueDeclaration member(Id pident, DatumTokenizer tokenizer) {
         assert (tokenizer.current.type == dtDColon);
         tokenizer.consume();
         assert (is Package pkg = table.get(pident));
         variable Package|ClassOrInterfaceDeclaration container = pkg;
         variable NestableDeclaration? nestable = null;
         while (true) {
-            String name = identifier(tokenizer);
+            String name = identifier(tokenizer).string; // XXX Wrong! and ident is not the same production as a member name
             if (is Package p = container) {
                 nestable = p.getMember<NestableDeclaration>(name);
             } else if (is ClassOrInterfaceDeclaration c = container) {
@@ -406,17 +407,18 @@ class DatumParser(Map<Id,Object> table) {
                 tokenizer.consume();
             }
         }
-        assert (exists n = nestable);
+        assert (is ClassDeclaration|ValueDeclaration n = nestable);
         return n;
     }
     
     "typeApplication ::= ident typeArgumentList"
-    Generic typeApplication(String ident, DatumTokenizer tokenizer) {
+    ClassOrInterface<Anything> typeApplication(Id ident, DatumTokenizer tokenizer) {
         assert (tokenizer.current.type == dtLt);
         value callable = table.get(ident);
         value tas = typeArgumentList(tokenizer);
         if (is FunctionDeclaration callable) {
-            return callable.apply<Anything,Nothing>(*tas);
+            assert (false);
+            //return callable.apply<Anything,Nothing>(*tas);
         } else if (is ClassDeclaration callable) {
             return callable.apply<Anything>(*tas);
         } else if (is GenericDeclaration callable) {
@@ -430,17 +432,27 @@ class DatumParser(Map<Id,Object> table) {
         assert (tokenizer.current.type == dtLt);
         value args = ArrayList<Type>();
         tokenizer.consume();
-        assert (is Type t = table.get(identifier(tokenizer)));
-        args.add(t);
+        args.add(toType(table.get(identifier(tokenizer))));
         while (tokenizer.current.type == dtComma) {
             tokenizer.consume();
-            assert (is Type t2 = table.get(identifier(tokenizer)));
-            args.add(t2);
+            args.add(toType(table.get(identifier(tokenizer))));
         }
         return args.sequence();
     }
     
-    Reference<List<Anything>>[] array(DatumTokenizer tokenizer) {
+    Type toType(FundementalValueType|MetaValue? typeOrDeclaration) {
+        Type t;
+        if (is ClassOrInterfaceDeclaration typeOrDeclaration) {
+            t = typeOrDeclaration.apply<Anything>();
+        } else if (is Type typeOrDeclaration) {
+            t = typeOrDeclaration;
+        } else {
+            assert (false);
+        }
+        return t;
+    }
+    
+    Id[] array(DatumTokenizer tokenizer) {
         assert (tokenizer.current.type == dtLSq);
         tokenizer.consume();
         while (tokenizer.current.type != dtRSq) {
@@ -448,6 +460,7 @@ class DatumParser(Map<Id,Object> table) {
             // then I can create the reference
             identifier(tokenizer);
         }
+        return nothing;
     }
     
     /*"application ::= ident '(' argumentList? ')'"
@@ -494,7 +507,7 @@ class DatumParser(Map<Id,Object> table) {
 
 void testDatumParser() {
     object die {}
-    value ct = HashMap<String,Object>();
+    value ct = HashMap<Id,MetaValue>();
     value p = DatumParser(ct);
     assert (123 == (p.parse("+123") else die));
     assert (-1 == (p.parse("-1") else die));
@@ -517,7 +530,7 @@ void testDatumParser() {
     //package
     assert (`package ceylon.language` == (p.parse("ceylon.language") else die));
     
-    ct.put("1", `package ceylon.language`);
+    ct.put(Id("1"), `package ceylon.language`);
     assert (`class String` == (p.parse("1::String") else die));
     assert (`function sequence` == (p.parse("1::sequence") else die));
     assert (`value null` == (p.parse("1::null") else die));
@@ -526,10 +539,117 @@ void testDatumParser() {
     assert (`value String.size` == (p.parse("1::String.size") else die));
     assert (`function String.trim` == (p.parse("1::String.trim") else die));
     assert (`value List.first` == (p.parse("`1::List.first") else die));
-    ct.put("2", `String`);
-    ct.put("3", `function sequence`);
-    ct.put("4", `interface List`);
-    ct.put("5", `class Entry`);
-    ct.put("6", `Integer`);
+    ct.put(Id("2"), `String`);
+    //ct.put(Id("3"), `function sequence`);
+    //ct.put(Id("4"), `interface List`);
+    ct.put(Id("5"), `class Entry`);
+    ct.put(Id("6"), `Integer`);
     assert (`String->Integer` == (p.parse("5<2,6>") else die));
 }
+
+/*
+shared interface Externalizable<Other> of Other
+        given Other satisfies Externalizable<Other> {
+    shared formal Factory<Other> factory();
+}
+
+Factory<Product>? externalize<Product>(Product p) {
+    Factory<Anything>? f;
+    if (is Package p) {
+        f = PackageFactory(p.qualifiedName);
+    } else if (is NestableDeclaration p) {
+        assert (is Package pck = p.container);
+        f = ToplevelDeclarationFactory<NestableDeclaration>(pck, p.name);
+    } else if (is Value p) {
+        f = ValueFactory(p);
+    } else if (is Class p) {
+        f = ClassFactory(p);
+    } else if (is Externalizable<Product> p) {
+        f = p.factory();
+    } else {
+        f = null;
+    }
+    assert (is Factory<Product>? f);
+    return f;
+}
+
+shared class Example() satisfies Externalizable<Example> {
+    shared actual Factory<Example> factory() {
+        return ApplicableFactory(`Example`, []);
+    }
+}
+
+shared interface Factory<out Product> {
+    shared formal Product create();
+}
+
+shared serializable
+class PackageFactory(String name) satisfies Factory<Package> {
+    shared actual Package create() {
+        return nothing;
+    }
+}
+shared serializable
+class ToplevelDeclarationFactory<Kind>(Package p, String name)
+        satisfies Factory<Kind>
+        given Kind satisfies NestableDeclaration {
+    PackageFactory pf = PackageFactory(p.qualifiedName); //p.factory();
+    shared actual Kind create() {
+        assert (exists c = pf.create().getMember<Kind>(name));
+        return c;
+    }
+}
+
+shared serializable
+class ValueFactory<CType>(Value<CType> c)
+        satisfies Factory<Value<CType>> {
+    ToplevelDeclarationFactory<ValueDeclaration> cdf = nothing; //c.factory()
+    shared actual Value<CType> create() {
+        return cdf.create().apply<CType>();
+    }
+}
+
+shared interface TypeFactory<out Product>
+        satisfies Factory<Product>
+        given Product satisfies Type<Anything> {}
+
+shared serializable
+class TypeArgumentFactory(TypeFactory<Type<Anything>>[] t)
+        satisfies Factory<Type<Anything>[]> {
+    shared actual Type<Anything>[] create() => t*.create();
+}
+
+TypeArgumentFactory typeArgumentFactory(Generic g) {
+    return TypeArgumentFactory(typeArguments(g));
+}
+
+shared serializable
+class ClassFactory<CType,Arguments>(Class<CType,Arguments> c)
+        satisfies TypeFactory<Class<CType,Arguments>>
+        given Arguments satisfies Anything[] {
+    ToplevelDeclarationFactory<ClassDeclaration> cdf = ToplevelDeclarationFactory(c.declaration.container, c.declatation.name); //c.factory()
+    TypeArgumentFactory tpfs = typeArgumentFactory(c);
+    shared actual Class<CType,Arguments> create() {
+        return cdf.create().classApply<CType,Arguments>(*tpfs.create());
+    }
+}
+
+shared serializable
+class InterfaceFactory<CType>(Interface<CType> c)
+        satisfies TypeFactory<Interface<CType>> {
+    ToplevelDeclarationFactory<InterfaceDeclaration> cdf = nothing; //c.factory()
+    TypeArgumentFactory tpfs = typeArgumentFactory(c);
+    shared actual Interface<CType> create() {
+        return cdf.create().interfaceApply<CType>(*tpfs.create());
+    }
+}
+
+shared serializable
+class ApplicableFactory<out Product>(Class<Product> c, Anything[] arguments)
+        satisfies Factory<Product> {
+    ClassFactory<Product,Anything[]> cf = nothing;
+    shared actual Product create() {
+        return cf.create().apply(*arguments);
+    }
+}
+*/

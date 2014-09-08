@@ -7,10 +7,7 @@ import ceylon.language.meta.model {
     ClassModel,
     Type,
     Class,
-    Function,
     FunctionModel,
-    Value,
-    Applicable,
     Generic,
     ClassOrInterface,
     UnionType,
@@ -21,14 +18,10 @@ import ceylon.language.meta.declaration {
     Declaration,
     ClassOrInterfaceDeclaration,
     ClassDeclaration,
-    InterfaceDeclaration,
     ValueDeclaration,
     TypeParameter,
     Module,
-    Package,
-    NestableDeclaration,
-    FunctionDeclaration,
-    GenericDeclaration
+    Package
 }
 import ceylon.language.serialization {
     Deconstructor,
@@ -364,10 +357,19 @@ object unset extends Unset() {
     shared actual String string => "?";
 }
 
-class ArrayTable() {
-    HashMap<Id,Row> data = HashMap<Id,Row>();
-    shared Map<Id,Row> rows => data;
-    shared class Row(size) {
+abstract class Table<ActualRow>()
+        given ActualRow satisfies Row {
+    shared formal class Row(Integer a) {
+    }
+    HashMap<Id,ActualRow> data = HashMap<Id,ActualRow>();
+    shared Map<Id,ActualRow> rows => data;
+    shared default void addRow(Id id, ActualRow row) {
+        data.put(id, row);
+    }
+}
+
+class ArrayTable() extends Table<Row>() {
+    shared actual class Row(size) extends super.Row(size) {
         "The number of elements in the array"
         shared Integer size;
         "Storage for the type argument (the first element) 
@@ -391,9 +393,6 @@ class ArrayTable() {
             return id;
         }
     }
-    shared void addRow(Id id, Row row) {
-        data.put(id, row);
-    }
 }
 
 "A table made up of rows. 
@@ -402,7 +401,8 @@ class ArrayTable() {
  
  We record the superclass model so we know what the reified type 
  parameters held in superclasses are."
-class Table(classDeclaration, typeParameters, superModel, columns) {
+class AttributeTable(classDeclaration, typeParameters, superModel, columns)
+        extends Table<Row>() {
     "The class whose state this table serializes"
     shared Id classDeclaration;
     
@@ -423,16 +423,16 @@ class Table(classDeclaration, typeParameters, superModel, columns) {
         schema.put(vd, index);
     }
     
-    HashMap<Id,Row> data = HashMap<Id,Row>();
-    shared Map<Id,Row> rows => data;
+    //HashMap<Id,Row> data = HashMap<Id,Row>();
+    //shared Map<Id,Row> rows => data;
     
     "A row within a table"
-    shared class Row() {
+    shared actual class Row(Integer s) extends super.Row(s) {
         // not that values is initialized to all unset
         // and that it's impossible for clients to see an unset value
         
         "The Table this Row is (or will be) a row of."
-        shared Table table => outer;
+        shared AttributeTable table => outer;
         
         value typeArguments_ = ArrayList<Id?>();
         for (tp in typeParameters) {
@@ -519,15 +519,15 @@ class Table(classDeclaration, typeParameters, superModel, columns) {
     }
     
     "Adds a row for the instance with the given id to the table."
-    shared void addRow(Id id, Row row) {
+    shared actual void addRow(Id id, Row row) {
         if (exists problemVd = row.complete) {
             throw Exception("incomplete row, missing value for ``problemVd``");
         }
-        data.put(id, row);
+        super.addRow(id, row);
     }
     
     "The row for the instances with the given id"
-    shared Row? get(Id id) => data[id];
+    shared Row? get(Id id) => rows[id];
     
     shared actual String string => "Table(``classDeclaration``, `` superModel else "null" ``, ``columns``)";
 }
@@ -615,15 +615,15 @@ Character? unquoteCharacter(String hex, Integer start = 0, Integer end = hex.siz
 "The top level object declaration corresponding to the 
  given fully qualified name."
 throws (`class Exception`, "An object with this name could not be found")
-Object? findObject(String fqName) {
-    if (exists model = classDeclarationFromName(fqName),
+Object? findObject(String fqName, Locator? locator = null) {
+    if (exists model = classDeclarationFromName(fqName, locator),
         exists obj = model.objectValue) {
         return obj.get() of Object?;
     }
     throw Exception("not an object: ``fqName``");
 }
 
-"Parses a datum."
+/*"Parses a datum."
 Object? parseDatum(String datum, ValueDeclaration vd) {
     if (exists first = datum.first) {
         if (first.letter) {
@@ -682,7 +682,7 @@ Object? parseDatum(String datum, ValueDeclaration vd) {
         return null;
     }
 }
-
+*/
 abstract class Writer() {
     "Formats a datum"
     see (`class DatumParser`)
@@ -737,14 +737,14 @@ abstract class Writer() {
     }
 }
 
-class TableWriter(StringBuilder output) extends Writer() {
-    shared void write(Table table) {
+class AttributeTableWriter(StringBuilder output) extends Writer() {
+    shared void write(AttributeTable table) {
         writeHeader(table);
         for (id->row in table.rows) {
             writeRow(id, row);
         }
     }
-    void writeHeader(Table table) {
+    void writeHeader(AttributeTable table) {
         // TODO abstractness?
         output.append("# ``table.classDeclaration``");
         if (exists sc = table.superModel) {
@@ -760,7 +760,7 @@ class TableWriter(StringBuilder output) extends Writer() {
         }
         output.appendNewline();
     }
-    void writeRow(Id id, Table.Row row) {
+    void writeRow(Id id, AttributeTable.Row row) {
         output.append(formatDatum(id));
         for (ta in row.typeArguments) {
             output.appendCharacter(',');
@@ -891,7 +891,7 @@ shared class TabularSerializer(Boolean inlineString = true) {
     SerializationContext context = serialization();
     value allocator = IdAllocator();
     
-    MutableMap<ClassModel,Table> tables = HashMap<ClassModel,Table>();
+    MutableMap<ClassModel,AttributeTable> tables = HashMap<ClassModel,AttributeTable>();
     ArrayTable arrayTable = ArrayTable();
     "Queue of instances waiting to be serialized"
     Queue<SerializableReference<Object?>> instances = LinkedList<SerializableReference<Object?>>();
@@ -989,16 +989,16 @@ shared class TabularSerializer(Boolean inlineString = true) {
         "Gets the table for the given class, creating it if necessary. 
          Note this can only be called after all the values have been added
          otherwise we don't know the schema of the table."
-        Table|ArrayTable getOrCreateTable(ClassModel cc) {
+        AttributeTable|ArrayTable getOrCreateTable(ClassModel cc) {
             if (cc.declaration == `class Array`) {
                 return arrayTable;
             }
-            Table table;
+            AttributeTable table;
             if (exists t = tables[cc]) {
                 table = t;
             } else {
                 assert (is ClassModel s = cc.extendedType);
-                table = Table(metaData.classOrInterfaceDeclaration(cc.declaration), cc.declaration.typeParameterDeclarations,
+                table = AttributeTable(metaData.classOrInterfaceDeclaration(cc.declaration), cc.declaration.typeParameterDeclarations,
                     s != `Object` && s != `Basic` then metaData.classOrInterface(s) else null,
                     { for (tup in values) tup[0] }.sequence());
                 tables.put(cc, table);
@@ -1013,10 +1013,10 @@ shared class TabularSerializer(Boolean inlineString = true) {
                 return;
             }
             assert (exists cc = currentClass);
-            Table|ArrayTable table = getOrCreateTable(cc);
+            AttributeTable|ArrayTable table = getOrCreateTable(cc);
             switch (table)
-            case (is Table) {
-                value row = table.Row();
+            case (is AttributeTable) {
+                value row = table.Row(-1);
                 for (tpName in typeParameters) {
                     try {
                         row.setTypeArgument(tpName[0], tpName[1]);
@@ -1117,7 +1117,7 @@ shared class TabularSerializer(Boolean inlineString = true) {
         ArrayTableWriter atw = ArrayTableWriter(arrayId, builder);
         atw.write(arrayTable);
         
-        TableWriter writer = TableWriter(builder);
+        AttributeTableWriter writer = AttributeTableWriter(builder);
         for (table in tables.items) {
             writer.write(table);
         }
@@ -1125,9 +1125,12 @@ shared class TabularSerializer(Boolean inlineString = true) {
     }
 }
 
+interface Locator {
+    shared formal Integer lineNumber;
+}
 
 "Treat an `Iterator<Character>` as something which can read (and count) lines)."
-class LineReader(Character|Finished read()) {
+class LineReader(Character|Finished read()) satisfies Locator {
     variable Boolean eof = false;
     
     variable Character|Finished cnext = finished;
@@ -1138,7 +1141,7 @@ class LineReader(Character|Finished read()) {
     variable value lino = 0;
     
     "The line number of the last line returned by [[readLine]]."
-    shared Integer lineNumber => lino;
+    shared actual Integer lineNumber => lino;
     
     variable String? lnext = null;
     variable String? llast = null;
@@ -1204,7 +1207,7 @@ class LineReader(Character|Finished read()) {
     }
 }
 
-ClassDeclaration? classDeclarationFromName(String fqClassname) {
+ClassDeclaration? classDeclarationFromName(String fqClassname, Locator? locator = null) {
     if (exists pkgIndex = fqClassname.firstInclusion("::")) {
         String pkgName = fqClassname[0 .. pkgIndex - 1];
         for (mod in modules.list) {
@@ -1219,41 +1222,112 @@ ClassDeclaration? classDeclarationFromName(String fqClassname) {
                         if (is ClassDeclaration clazz = classOrInterface) {
                             return clazz;
                         } else {
-                            throw SchemaException("interface found instead of class: ``fqClassname``");
+                            throw SchemaException("interface found instead of class: ``fqClassname``", locator);
                         }
                     } else if (exists anon = pkg.getValue(className),
                         anon.objectValue) {
                         return anon.objectClass;
                     } else {
-                        throw SchemaException("class not found: ``fqClassname``");
+                        throw SchemaException("class not found: ``fqClassname``", locator);
                     }
                 } else {
-                    throw SchemaException("package not found: ``pkgName``");
+                    throw SchemaException("package not found: ``pkgName``", locator);
                 }
             }
         }
-        throw SchemaException("no module found for class: ``fqClassname``");
+        throw SchemaException("no module found for class: ``fqClassname``", locator);
     } else {
         throw Exception("class name not fully qualified: ``fqClassname``");
     }
 }
 
-class ParseException(LineReader reader, String message) extends Exception(message + " on line ``reader.lineNumber``") {
+String msg(String message, Locator? locator = null) {
+    if (exists locator) {
+        return message + " on line " + locator.lineNumber.string;
+    } else {
+        return message;
+    }
 }
 
-class SchemaException(String message) extends Exception(message) {
+class ParseException(String message, Locator? locator = null) extends Exception(msg(message, locator)) {
+}
+
+class SchemaException(String message, Locator? locator = null) extends Exception(msg(message, locator)) {
+}
+
+class MetaD(Map<Id,MetaValue> map) {
+    
+    shared ValueDeclaration? objectDeclaration(Id id) {
+        value item = map.get(id);
+        if (exists item) {
+            if (is ClassDeclaration item) {
+                return item.objectValue;
+            }
+            throw Exception("item with id ``id`` is neither class nor class declaration: ``type(item)``");
+        } else {
+            return null;
+        }
+    }
+    
+    shared ClassDeclaration classDeclaration(Id id) {
+        value item = map.get(id);
+        if (exists item) {
+            if (is ClassDeclaration item) {
+                return item;
+            } else if (is Class item) {
+                return item.declaration;
+            }
+            throw Exception("item with id ``id`` is neither class nor class declaration: ``type(item)``");
+        } else {
+            throw Exception("no meta item has id ``id``");
+        }
+    }
+    
+    shared ClassModel<Type> classModel<Type = Anything>(Id id) {
+        value item = map.get(id);
+        if (exists item) {
+            if (is ClassDeclaration item) {
+                return item.classApply<Type,Nothing>();
+            } else if (is Class<Type> item) {
+                return item;
+            } else {
+                throw Exception("item with id ``id`` is neither class nor class declaration: ``type(item)``");
+            }
+        } else {
+            throw Exception("no meta item has id ``id``");
+        }
+    }
+    
+    shared Type<Anything> typeArgument(Id id) {
+        value item = map.get(id);
+        if (exists item) {
+            if (is ClassOrInterfaceDeclaration item) {
+                return item.apply<Anything>();
+            } else if (is ClassOrInterface<Anything> item) {
+                return item;
+            } else if (is Union item) {
+                throw Exception("union type arguments not yet supported");
+            } else if (is Intersection item) {
+                throw Exception("intersection type arguments not yet supported");
+            } else {
+                throw Exception("item with id ``id`` is not a type: ``type(item)``");
+            }
+        } else {
+            throw Exception("no meta item has id ``id``");
+        }
+    }
 }
 
 class MetaTableReader(LineReader reader) {
-    shared Map<Id,MetaValue> read() {
+    HashMap<Id,MetaValue> result = HashMap<Id,MetaValue>();
+    shared DatumParser parser = DatumParser(result);
+    shared MetaD read() {
         // Have we reached eof yet?
         value l = reader.readLine();
         assert (exists l,
             l == "## META");
         //IdAllocator allocator, Reference<Object?> enlist(Anything instance)
-        value strings = HashMap<Id,String>();
-        value result = HashMap<Id,MetaValue>();
-        value parser = DatumParser(result);
+        
         while (true) {
             value line = reader.readLine();
             if (exists line) {
@@ -1266,23 +1340,104 @@ class MetaTableReader(LineReader reader) {
                 String datum = line[commaIndex + 1 ...];
                 try {
                     assert (is MetaValue parsed = parser.parse(datum));
+                    print("putting ``ident``->``parsed``");
                     result.put(ident, parsed);
                 } catch (Throwable e) {
-                    throw Exception("problem parsing ``datum`` for id ``ident`` on line ``reader.lineNumber``");
+                    throw Exception("problem parsing ``datum`` for id ``ident`` on line ``reader.lineNumber``", e);
                 }
             } else {
                 throw Exception("unexpected end of stream");
             }
         }
         
-        return result;
+        return MetaD(result);
     }
 }
 
-class TableReader(LineReader reader, Map<Id,MetaValue> metaData) {
+class ArrayTableReader(DatumParser parser, MetaD metaData, LineReader reader) {
+    shared ArrayTable? read() {
+        // Have we reached eof yet?
+        value l = reader.readLine();
+        if (!l exists) {
+            return null;
+        }
+        reader.unread();
+        
+        readHeader1();
+        readHeader2();
+        
+        ArrayTable table = ArrayTable();
+        
+        while (true) {
+            value line = reader.readLine();
+            if (exists line, !line.empty) {
+                if (line.startsWith("#")) {
+                    reader.unread();
+                    break;
+                } else {
+                    value row = table.Row(2);
+                    Id id = parseRow(line, table);
+                }
+            } else {
+                break;
+            }
+        }
+        
+        return table;
+    }
+    
+    void readHeader1() {
+        if (exists l = reader.readLine()) {
+            if (!l.startsWith("#")) {
+                throw Exception();
+            }
+            assert (is Id cdId = parser.parse(l[1...].trimmed));
+            ClassDeclaration cd = metaData.classDeclaration(cdId);
+            assert (cd == `class Array`);
+        } else {
+            throw Exception();
+        }
+    }
+    void readHeader2() {
+        if (exists l = reader.readLine()) {
+            if (l != "# =id,<Element>,...") {
+                throw Exception();
+            }
+        } else {
+            throw Exception();
+        }
+    }
+    Id parseRow(String line, ArrayTable table) {
+        
+        String[] idData = line.split((Character ch) => ch == ',').sequence(); // this will only work if commas within datums are quoted
+        Id id;
+        if (exists i = idData[0]) {
+            id = Id(i);
+        } else {
+            throw Exception("missing =id on row");
+        }
+        Id taId;
+        if (exists i = idData[1]) {
+            taId = Id(i);
+        } else {
+            throw Exception("missing <Element> on row");
+        }
+        value row = table.Row(idData.size - 2);
+        row.typeArgument = taId;
+        for (index->datum in idData[2...].indexed) {
+            "we don't have arrays of MetaValue"
+            assert (is Id|FundementalValueType x = parser.parse(datum));
+            row.setValue(index, x);
+        }
+        table.addRow(id, row);
+        return id;
+    }
+}
+
+class AttributeTableReader(LineReader reader, DatumParser parser, MetaD metaData) {
     
     "The next table, or null"
-    shared Table? read() {
+    shared AttributeTable? read() {
         // Have we reached eof yet?
         value l = reader.readLine();
         if (!l exists) {
@@ -1301,7 +1456,7 @@ class TableReader(LineReader reader, Map<Id,MetaValue> metaData) {
         value attributes = tpAttributes[1];
         // TODO check the type parameters in the table match the type parameters in 
         // the class (order and name)
-        Table table = Table(cid, cd.typeParameterDeclarations, sid, attributes);
+        AttributeTable table = AttributeTable(cid, cd.typeParameterDeclarations, sid, attributes);
         
         while (true) {
             value line = reader.readLine();
@@ -1310,7 +1465,7 @@ class TableReader(LineReader reader, Map<Id,MetaValue> metaData) {
                     reader.unread();
                     break;
                 } else {
-                    Table.Row row = table.Row();
+                    AttributeTable.Row row = table.Row(-1);
                     Id id = parseRow(reader, line, tps, table.columns, row);
                     table.addRow(id, row);
                 }
@@ -1331,47 +1486,41 @@ class TableReader(LineReader reader, Map<Id,MetaValue> metaData) {
         // TODO Do I care about abstractness too?
         if (exists line = reader.readLine()) {
             if (!line.startsWith("#")) {
-                throw ParseException(reader, "expected header row");
+                throw ParseException("expected header row", reader);
             }
             String[] parts = line[1...].trimmed.split().sequence();
-            if (exists cid = parts[0]) {
-                ClassModel? superModel;
-                ClassDeclaration classDeclaration;
-                Id? sid;
+            Id cid;
+            ClassDeclaration classDeclaration;
+            Id? sid;
+            ClassModel? superModel;
+            if (exists cpart = parts[0]) {
+                cid = Id(cpart);
                 // super class
                 if (exists superId = parts[2]) {
                     if (exists ext = parts[1],
                         ext == "extends") {
                     } else {
-                        throw ParseException(reader, "expected <class> extends <superclass>");
+                        throw ParseException("expected <class> extends <superclass>", reader);
                     }
-                    if (is ClassModel s = metaData.get(superId)) {
-                        superModel = s;
-                        sid = Id(superId);
-                    } else {
-                        throw SchemaException("``superId`` does not identify a ClassModel in the meta table");
-                    }
+                    sid = Id(superId);
+                    superModel = metaData.classModel<Anything>(sid else nothing);
                 } else {
                     sid = null;
                     superModel = null;
                 }
                 // the class itself
-                if (is ClassDeclaration cd = metaData.get(cid)) {
-                    classDeclaration = cd;
-                } else {
-                    throw SchemaException("``cid`` does not identify a ClassDeclaration in the meta table");
-                }
+                classDeclaration = metaData.classDeclaration(cid);
                 if (exists superModel,
-                    exists s = classDeclaration.extendedType,
-                    s != superModel) {
-                    throw SchemaException("``classDeclaration`` no longer extends ``superModel``");
+                    exists s = classDeclaration.extendedType?.declaration,
+                    s != superModel.declaration) {
+                    throw SchemaException("``classDeclaration`` no longer extends ``superModel`` but rather `` classDeclaration.extendedType else "null" ``", reader);
                 }
-                return [Id(cid), classDeclaration, sid, superModel];
+                return [cid, classDeclaration, sid, superModel];
             } else {
-                throw ParseException(reader, "missing class name while reading table header 1");
+                throw ParseException("missing class name while reading table header 1", reader);
             }
         } else {
-            throw ParseException(reader, "unexpected eof while reading table header 1");
+            throw ParseException("unexpected eof while reading table header 1", reader);
         }
     }
     "Parses the second header row of a table, which is a hash (#)
@@ -1387,7 +1536,7 @@ class TableReader(LineReader reader, Map<Id,MetaValue> metaData) {
         LineReader reader, ClassDeclaration classDeclaration) {
         if (exists line = reader.readLine()) {
             if (!line.startsWith("#")) {
-                throw ParseException(reader, "expected header row starting with #");
+                throw ParseException("expected header row starting with #", reader);
             }
             value typeParameters = ArrayList<TypeParameter>();
             value attributes = ArrayList<ValueDeclaration>();
@@ -1395,7 +1544,7 @@ class TableReader(LineReader reader, Map<Id,MetaValue> metaData) {
             variable value index = 0;
             if (exists id = attributeNames.first, id == "=id") {
             } else {
-                throw ParseException(reader, "missing =id column in column names header");
+                throw ParseException("missing =id column in column names header", reader);
             }
             
             for (attributeName in attributeNames.rest) {
@@ -1412,20 +1561,21 @@ class TableReader(LineReader reader, Map<Id,MetaValue> metaData) {
             }
             return [typeParameters, attributes];
         } else {
-            throw ParseException(reader, "unexpected eof while reading column names header");
+            throw ParseException("unexpected eof while reading column names header", reader);
         }
     }
     "Parses a row of data"
-    Id parseRow(LineReader reader, String line, List<TypeParameter> tps, List<ValueDeclaration> columns, Table.Row row) {
+    Id parseRow(LineReader reader, String line, List<TypeParameter> tps, List<ValueDeclaration> columns, AttributeTable.Row row) {
         
         String[] idData = line.split((Character ch) => ch == ',').sequence(); // this will only work if commas within datums are quoted
         if (idData.size - 1 != tps.size + columns.size) {
-            throw ParseException(reader, "expected `` tps.size + columns.size + 1 `` values, found ``idData.size`` '``line``' ``idData``");
+            throw ParseException("expected `` tps.size + columns.size + 1 `` values, found ``idData.size`` '``line``' ``idData``", reader);
         }
         
         Id id;
         if (exists datum = idData[0]) {
-            id = datum;
+            assert (is Id i = parser.parse(datum));
+            id = i;
             // TODO check contains only characters from the id alphabet
             /*if (exists num = datum) {
                 id = num;
@@ -1433,19 +1583,21 @@ class TableReader(LineReader reader, Map<Id,MetaValue> metaData) {
                 throw ParseException(reader, "<id> datum held non-Integer");
             }*/
         } else {
-            throw ParseException(reader, "missing <id> datum");
+            throw ParseException("missing <id> datum", reader);
         }
         
         variable value index = 0;
         for (datumStr in idData.rest) {
             if (exists tp = tps[index]) {
                 //value ta = nothing; // parse it
-                row.setTypeArgument(tp, datumStr);
+                assert (is Id taId = parser.parse(datumStr));
+                row.setTypeArgument(tp, taId);
             } else if (exists vd = columns[index - tps.size]) {
-                value datum = parseDatum(datumStr, vd);
+                value datum = parser.parse(datumStr);
+                assert (is Id|FundementalValueType datum);
                 row.setValue(vd, datum);
             } else {
-                throw ParseException(reader, "too many columns in row");
+                throw ParseException("too many columns in row", reader);
             }
             index++;
         }
@@ -1466,30 +1618,31 @@ Boolean isSubclassOf(ClassDeclaration a, ClassDeclaration b) {
     return false;
 }
 
-class DbReader(Module mod, LineReader reader) {
+"Provides a facility for deserializing instances from String previously 
+ generated by [[TabularSerializer]]."
+shared class TabularDeserializer(Module mod, String serialized) {
+    
+    DeserializationContext context = deserialization();
+    
     "A map from class to table. This must have iteration order such that 
      more derived classes occur before their super classes, so that 
      [[idToCd]] gets populated with the instance class for a given id 
      (rather than some superclass of the instance)."
-    HashMap<ClassDeclaration,Table> tables = HashMap<ClassDeclaration,Table>();
+    HashMap<ClassDeclaration,AttributeTable> tables = HashMap<ClassDeclaration,AttributeTable>();
     
     "A map from instance id to the tables in which its state is stored. 
      The tables are in most-refined to least refined order."
     HashMap<Id,ClassDeclaration> idToCd = HashMap<Id,ClassDeclaration>();
     
-    Map<Id,MetaValue> readMeta(LineReader reader) {
-        MetaTableReader mtr = MetaTableReader(reader);
-        return mtr.read();
-    }
-    
-    value metaTable = readMeta(reader);
-    
-    TypeParser typeParser = TypeParser(mod);
-    
-    void readTables(LineReader reader) {
+    value reader = LineReader(serialized.iterator().next);
+    MetaTableReader mtr = MetaTableReader(reader);
+    MetaD metaTable = mtr.read();
+    value parser = mtr.parser;
+    assert (exists arrayTable = ArrayTableReader(parser, metaTable, reader).read());
+    void readAttributeTables(LineReader reader) {
         
-        TableReader tr = TableReader(reader, metaTable);
-        value tableList = ArrayList<Table>();
+        AttributeTableReader tr = AttributeTableReader(reader, parser, metaTable);
+        value tableList = ArrayList<AttributeTable>();
         // read the tables from the stream
         while (exists table = tr.read()) {
             // insert tables into the list so more refined tables occur 
@@ -1497,16 +1650,17 @@ class DbReader(Module mod, LineReader reader) {
             // each id in the stream woth the most derived class.
             variable value index = 0;
             for (t in tableList) {
-                /*if (isSubclassOf(t.classDeclaration, table.classDeclaration)) {
+                ClassDeclaration cd = metaTable.classDeclaration(t.classDeclaration);
+                ClassDeclaration cd2 = metaTable.classDeclaration(table.classDeclaration);
+                if (isSubclassOf(cd, cd2)) {
                     tableList.insert(index + 1, table);
                     break;
-                } else if (isSubclassOf(table.classDeclaration, t.classDeclaration)) {
+                } else if (isSubclassOf(cd2, cd)) {
                     tableList.insert(index, table);
                     break;
                 }
                 
-                index++;*/
-                assert (false);
+                index++;
             } else {
                 tableList.add(table);
             }
@@ -1515,38 +1669,36 @@ class DbReader(Module mod, LineReader reader) {
         // Finally iterate those tables, populating idToTables
         for (table in tableList) {
             //print(table);
-            tables.put(table.classDeclaration, table);
+            ClassDeclaration cd = metaTable.classDeclaration(table.classDeclaration);
+            tables.put(cd, table);
             // TODO can speed up this loop if I know table is abstract
             for (id in table.rows.keys) {
                 if (!id in idToCd.keys) {
-                    idToCd.put(id, table.classDeclaration);
+                    idToCd.put(id, cd);
                 }
             }
         }
     }
     
-    readTables(reader);
+    readAttributeTables(reader);
     
-    // TODO Get rid of this, without reducing test coverage
-    deprecated ("replaced by registerReferences")
-    shared Iterable<[Id, ClassModel]> instanceRefs {
-        return idToCd.map(function(Entry<Id,ClassDeclaration> item) {
-                Id id = item.key;
-                ClassDeclaration cd = item.item;
-                assert (exists table = tables[cd]);
-                assert (exists row = table.get(id));
-                value parser = TypeParser(`module com.github.tombentley.tabular`);
-                return [id, cd.classApply<Anything,Nothing>(*{ for (s in row.typeArguments) parser.parse(s) })];
-            });
-        //return { for (id->cd in idToCd) [id, cd.classApply<Anything,Nothing>()] };
-    }
-    
-    shared void registerReferences(DeserializationContext context) {
-        value parser = TypeParser(mod);
+    void registerReferences() {
+        
+        for (id->row in arrayTable.rows) {
+            context.reference(id, `class Array`.classApply<Anything,Nothing>(metaTable.typeArgument(row.typeArgument)));
+        }
+        
         for (id->cd in idToCd) {
             if (exists table = tables[cd]) {
                 if (exists row = table.get(id)) {
-                    context.reference(id, cd.classApply<Anything,Nothing>(*{ for (s in row.typeArguments) parser.parse(s) }));
+                    context.reference(id, cd.classApply<Anything,Nothing>(*row.typeArguments.map(metaTable.typeArgument)));
+                    /*{
+                     if (is Type ta = metaData.get(taId)) {
+                     return ta;
+                     } else {
+                     throw Exception("``metaData.get(taId) else "null`="`` ``type(metaData.get(taId))``");
+                     }
+                     })));*/
                 } else {
                     throw Exception("row not found in table: id: ``id``, ``table``");
                 }
@@ -1555,44 +1707,46 @@ class DbReader(Module mod, LineReader reader) {
             }
         }
     }
+    
     "The class of the serialized instance with the given id"
-    shared ClassModel<Instance,Nothing> classOf<Instance>(Integer id) {
-        assert (exists cd = idToCd[id]);
-        return cd.classApply<Instance,Nothing>();
+    ClassModel<Instance,Nothing> classOf<Instance>(Id id) {
+        if (exists aa = arrayTable.rows.get(id)) {
+            Type<Anything> ta = metaTable.typeArgument(aa.typeArgument);
+            return `class Array`.classApply<Instance,Nothing>(ta);
+        } else if (exists cd = idToCd[id]) {
+            if (exists table = tables[cd]) {
+                if (exists row = table.get(id)) {
+                    return cd.classApply<Instance,Nothing>(*row.typeArguments.map(metaTable.typeArgument));
+                }
+            }
+            throw Exception("type arguments not found for ``cd`` with id ``id``");
+        } else {
+            throw Exception("id not found in idToCd: ``id``");
+        }
     }
     
     "Get a Deconstructed for the instance with the given id, of the given class"
-    shared List<Table> get(Object id, ClassModel clazz) {
-        assert (is Integer id);
+    List<AttributeTable> getState(Id id, ClassModel clazz) {
+        
         variable value classDecl = idToCd[id];
         // TODO This List<Table> is not necessary: TabDeconstructed can just follow the
         // link tables[table.superClass] to get the superclass table. Or at least make this return an Iterable
-        ArrayList<Table> tabs = ArrayList<Table>();
+        ArrayList<AttributeTable> tabs = ArrayList<AttributeTable>();
         while (exists cd = classDecl,
             cd != `class Object` && cd != `class Basic`) {
             assert (exists t = tables[cd]);
             tabs.add(t);
             if (exists s = t.superModel) {
-                assert (is ClassModel sm = metaTable.get(s));
-                classDecl = sm.declaration;
+                classDecl = metaTable.classDeclaration(s);
             } else {
                 classDecl = null;
             }
         }
         return tabs;
     }
-}
-
-
-"Provides a facility for deserializing instances from String previously 
- generated by [[TabularSerializer]]."
-shared class TabularDeserializer(Module mod, String serialized) {
     
-    DeserializationContext context = deserialization();
-    
-    value db = DbReader(mod, LineReader(serialized.iterator().next));
     // register references with the context
-    db.registerReferences(context);
+    registerReferences();
     
     // now deserialize the references
     for (reference in context) {
@@ -1601,55 +1755,80 @@ shared class TabularDeserializer(Module mod, String serialized) {
          or does an element change to StatefulReference once deserialize() 
          has been called? */
         assert (is Id id = reference.id);
-        List<Table> tables = db.get(id, reference.clazz);
+        
         class TabDeconstructed() satisfies Deconstructed {
+            value arrayRow = arrayTable.rows.get(id);
+            List<AttributeTable> tabs = getState(id, reference.clazz);
+            Type|Reference<Type> fooble<Type>(Anything val) {
+                if (is Id val) {
+                    // Is it an object? 
+                    if (exists vd = metaTable.objectDeclaration(val)) {
+                        assert (is Type r = vd.get());
+                        if (exists r,
+                            r.string.startsWith("ceylon.language.null_@")) {
+                            assert (is Type f = null);
+                            return f;
+                        }
+                        return r;
+                    }
+                    return context.reference(val, classOf<Type>(val));
+                } else if (is Type val) {
+                    return val;
+                } else {
+                    throw Exception("``type(val)``");
+                }
+            }
             
             shared actual Type|Reference<Type> getValue<Type>(ValueDeclaration attribute) {
-                try {
-                    for (table in tables) {
-                        if (table.classDeclaration == attribute.container) {
-                            assert (exists row = table.get(id));
-                            value val = row.getValue(attribute);
-                            // TODO Type or Reference??? Depends on table schema
-                            // But let's be honest this is a shit way to decide 
-                            // whether the integer we got is a reference or a value
-                            if (is Integer val, attribute.openType != `class Integer`) {
-                                return context.reference(val, db.classOf<Type>(val));
-                            } else {
-                                if (is Type val) {
-                                    return val;
-                                } else {
-                                    throw Exception("``type(val)``");
-                                }
+                if (exists arrayRow) {
+                    value size = arrayRow.size;
+                    assert (is Type|Reference<Type> size);
+                    return size;
+                } else {
+                    try {
+                        for (table in tabs) {
+                            ClassDeclaration cd = metaTable.classDeclaration(table.classDeclaration);
+                            if (cd == attribute.container) {
+                                assert (exists row = table.get(id));
+                                value val = row.getValue(attribute);
+                                
+                                return fooble<Type>(val);
                             }
                         }
+                        throw Exception("attribute not found: ``attribute`` in ``tabs``");
+                    } catch (Throwable e) {
+                        throw Exception("id=``id``, vd=``attribute``", e);
                     }
-                } catch (Exception e) {
-                    throw Exception("id=``id``, vd=``attribute``", e);
                 }
-                throw Exception("attribute not found: ``attribute``");
             }
             
             shared actual Type|Reference<Type> getElement<Type>(Integer index) {
-                return nothing;
+                assert (exists arrayRow);
+                value val = arrayRow.getValue(index);
+                return fooble<Type>(val);
             }
             
             shared actual Type getTypeArgument(TypeParameter typeParameter) {
-                for (table in tables) {
-                    if (table.classDeclaration == typeParameter.container) {
+                if (exists arrayRow) {
+                    return metaTable.typeArgument(arrayRow.typeArgument);
+                }
+                for (table in tabs) {
+                    ClassDeclaration cd = metaTable.classDeclaration(table.classDeclaration);
+                    if (cd == typeParameter.container) {
                         assert (exists row = table.get(id));
-                        return TypeParser(mod).parse(row.getTypeArgument(typeParameter));
+                        Id taId = row.getTypeArgument(typeParameter);
+                        return metaTable.typeArgument(taId);
                     }
                 }
-                throw Exception("type parameter not found: ``typeParameter``");
+                throw Exception("type parameter not found: ``typeParameter`` in tables ``tables`` for id ``id``  clazz ``reference.clazz``");
             }
             
             shared actual Iterator<[ValueDeclaration, Anything]> iterator() {
                 object iter satisfies Iterator<[ValueDeclaration, Anything]> {
                     
-                    Iterator<Table> titer = tables.iterator();
+                    Iterator<AttributeTable> titer = tabs.iterator();
                     variable Iterator<ValueDeclaration> vds = emptyIterator;
-                    variable Table.Row? row = null;
+                    variable AttributeTable.Row? row = null;
                     
                     shared actual [ValueDeclaration, Anything]|Finished next() {
                         variable value nextVd = vds.next();
@@ -1674,6 +1853,8 @@ shared class TabularDeserializer(Module mod, String serialized) {
         reference.deserialize(TabDeconstructed());
     }
     
+    // END OF INITIALIZER
+    
     // API for the client to get some deserialized instances
     shared {Type*} select<Type>(ClassModel<Type> from) {
         {RealizableReference<Object?>*} statefulRefs = context.map(function(Reference<Object?> reference) {
@@ -1690,6 +1871,7 @@ shared class TabularDeserializer(Module mod, String serialized) {
     }
 }
 
+/*
 class ExperimentSuper(a) {
     shared default String a;
 }
@@ -1719,3 +1901,4 @@ void experiment() {
 // So we could use Attribute in the deconstructed API, but 
 // the $serialize$() method would have to just get the declaration
 // anyway
+*/
