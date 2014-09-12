@@ -8,6 +8,7 @@ class Person(name, address)
     shared actual variable String name;
     shared variable Address address;
     shared variable Person? spouse = null;
+    
     shared actual default String string {
         variable value s = "``name`` who lives at ``address``";
         if (exists sp = spouse) {
@@ -15,12 +16,27 @@ class Person(name, address)
         }
         return s;
     }
+    shared actual default Boolean equals(Object other) {
+        if (is Person other) {
+            return name == other.name
+                    && address == other.address;
+        }
+        return false;
+    }
+    shared actual default Integer hash => name.hash + address.hash;
 }
 
 shared serializable
 class Address(lines) {
     shared String* lines;
     shared actual String string => "|".join(lines);
+    shared actual Boolean equals(Object other) {
+        if (is Address other) {
+            return lines == other.lines;
+        }
+        return false;
+    }
+    shared actual Integer hash => lines.hash;
 }
 
 shared serializable
@@ -29,6 +45,14 @@ class EmployedPerson(String name, Address address, employer)
     shared Organization employer;
     shared variable Person? boss = null;
     shared actual default String string => "``super.string`` and is employed by ``employer``";
+    shared actual Boolean equals(Object other) {
+        if (is EmployedPerson other) {
+            return super.equals(other)
+                    && employer == other.employer;
+        }
+        return false;
+    }
+    shared actual Integer hash => super.hash + employer.hash + (boss?.hash else 0);
 }
 
 
@@ -51,6 +75,12 @@ class Organization(name)
         satisfies LegalEntity {
     shared actual String name;
     shared actual String string => name;
+    shared actual Boolean equals(Object other) {
+        if (is Organization other) {
+            return name == other.name;
+        }
+        return false;
+    }
 }
 
 shared abstract serializable
@@ -66,6 +96,14 @@ class Contract<out X,out Y>(x, y)
 shared serializable
 class EmploymentContract(Organization org, Person person)
         extends Contract<Organization,Person>(org, person) {
+    shared actual Boolean equals(Object other) {
+        if (is EmploymentContract other) {
+            return this.x == other.x
+                    && this.y == other.y;
+        }
+        return false;
+    }
+    shared actual Integer hash => x.hash ^ y.hash;
 }
 /*
 shared serializable
