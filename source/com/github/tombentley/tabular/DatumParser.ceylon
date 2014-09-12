@@ -8,30 +8,27 @@ import ceylon.language.meta.declaration {
     ClassOrInterfaceDeclaration,
     FunctionDeclaration,
     ValueDeclaration,
-    InterfaceDeclaration,
     GenericDeclaration,
-    NestableDeclaration,
-    FunctionalDeclaration
+    NestableDeclaration
 }
 import ceylon.language.meta.model {
-    Applicable,
-    Generic,
-    Class,
-    Function,
-    Value,
-    Interface,
     Type,
-    ClassOrInterface
+    ClassOrInterface,
+    UnionType,
+    IntersectionType
 }
 import ceylon.collection {
     ArrayList,
-    HashMap
-}
-import ceylon.language.serialization {
-    Reference,
-    serialization
+    HashMap,
+    StringBuilder
 }
 
+"A token produced by a lexer"
+class Token(shared Object type, shared String token, shared Integer index) {
+    shared actual String string => "``token`` (``type``) at index ``index``";
+}
+
+"enumerates the different token types"
 abstract class DatumTokenType(shared actual String string)
         of dtAnd | dtOr | dtDot | dtComma | dtDColon | dtGt | dtLt | dtLSq | dtRSq | /*dtLParen | dtRParen |*/ dtDQuote | dtSQuote | dtPlus | dtMinus | dtHash | dtDollar | dtDigit | dtAlpha | dtEoi {}
 
@@ -55,6 +52,7 @@ object dtDollar extends DatumTokenType("$") {}
 object dtDigit extends DatumTokenType("digit") {}
 object dtAlpha extends DatumTokenType("alpha") {}
 object dtEoi extends DatumTokenType("<eoi>") {}
+
 
 "The tokenizer used by [[DatumParser]]."
 class DatumTokenizer(input) {
@@ -155,7 +153,7 @@ class DatumTokenizer(input) {
     "The index of the current token in the input."
     shared Integer index => ii;
 }
-//TODO union and intersection types (required for type arguments)
+
 """
    A parser for "datums", the values store in a [[ValueTable]] as 
    emitted by [[ValueTableWriter]] and read by [[ValueTableReader]]. 
@@ -187,6 +185,8 @@ class DatumTokenizer(input) {
        unionType ::= model ('&' model)*
  """
 class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
+    // TODO Decide whether we throw exclusively AssertionError or some Exception from this parser
+    
     shared FundementalValueType|MetaValue|Id[]|Id parse(String datum) {
         value tokenizer = DatumTokenizer(datum);
         return input(tokenizer);
@@ -216,6 +216,63 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
             throw Exception("unexpected token ``tokenizer.current``");
         }
     }
+    
+    "Unquotes the characters in the given string, which should not be be enclosed 
+     in double quotes."
+    String unquoteString(String string) {
+        StringBuilder sb = StringBuilder();
+        value iter = string.iterator();
+        variable value ii = -1;
+        while (true) {
+            value char = iter.next();
+            ii++;
+            switch (char)
+            case (is Finished) {
+                break;
+            }
+            case ('\\') {
+                if ('{' != iter.next()) {
+                    throw Exception("expecting { following \\ ");
+                }
+                ii++;
+                if ('#' != iter.next()) {
+                    throw Exception("expecting # following \\{ ");
+                }
+                ii++;
+                value start = ii + 1;
+                while (true) {
+                    if (is Character hexDigit = iter.next()) {
+                        ii++;
+                        if (hexDigit == '}') {
+                            if (exists unquoted = unquoteCharacter(string, start, ii - start)) {
+                                sb.appendCharacter(unquoted);
+                                break;
+                            } else {
+                                throw Exception("invalid quoted character ``string[start:ii]``");
+                            }
+                        } else if (!('0' <= hexDigit <= '9' || 'a' <= hexDigit <= 'f')) {
+                            throw Exception("expecting only hexadecimal digits following \\{#");
+                        }
+                    } else {
+                        throw Exception("unterminated quoted character");
+                    }
+                }
+            }
+            case ('"', '\'', ',', '\n', '\r') {
+                throw Exception("unquoted quotable character in quoted string: \"``string``\"");
+            }
+            else {
+                assert (is Character char);
+                sb.appendCharacter(char);
+            }
+        }
+        return sb.string;
+    }
+    
+    Character? unquoteCharacter(String hex, Integer start = 0, Integer end = hex.size) {
+        Integer? codepoint = parseInteger(hex[start:end], 16);
+        return codepoint?.character;
+    }
     "string ::= '\\\"' escapedCharacter* '\\\"'"
     String str(DatumTokenizer tokenizer) {
         assert (tokenizer.current.type == dtDQuote);
@@ -234,10 +291,12 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
         //tokenizer.consume();
         value start = tokenizer.index + 1;
         if (exists end = tokenizer.input[start...].firstOccurrence('\'')) {
-            if (exists unquoted = unquoteCharacter(tokenizer.input[start .. end - 1])) {
-                return unquoted;
+            value unquoted = unquoteString(tokenizer.input[start:end]);
+            if (unquoted.size == 1,
+                exists c = unquoted[0]) {
+                return c;
             } else {
-                throw Exception("invalid quoted character: ``tokenizer.input[start .. end - 1]``");
+                throw Exception(unquoted.size == 0 then "empty quoted character" else "invalid quoted character: ``tokenizer.input[start:end]``");
             }
         } else {
             throw Exception("unterminated character: starting at ``start``");
@@ -258,7 +317,31 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
         tokenizer.consume();
         
         if (tokenizer.current.type != dtDigit) {
-            throw Exception("expected digit following `` plus then "+" else "-" `` but found ``tokenizer.current``");
+            if (tokenizer.current.token == "I") { // +Inf and -Inf
+                tokenizer.consume();
+                if (tokenizer.current.token != "n") {
+                    throw Exception("unexpected token following `` plus then "+" else "-" ``I: ``tokenizer.current``");
+                }
+                tokenizer.consume();
+                if (tokenizer.current.token != "f") {
+                    throw Exception("unexpected token following `` plus then "+" else "-" ``In: ``tokenizer.current``");
+                }
+                tokenizer.consume();
+                return plus then infinity else -infinity;
+            } else if (tokenizer.current.token == "N") { // +NaN and -NaN
+                tokenizer.consume();
+                if (tokenizer.current.token != "a") {
+                    throw Exception("unexpected token following `` plus then "+" else "-" ``N: ``tokenizer.current``");
+                }
+                tokenizer.consume();
+                if (tokenizer.current.token != "N") {
+                    throw Exception("unexpected token following `` plus then "+" else "-" ``Na: ``tokenizer.current``");
+                }
+                tokenizer.consume();
+                return 0.0 / 0.0;
+            } else {
+                throw Exception("unexpected token following `` plus then "+" else "-" ``: ``tokenizer.current``");
+            }
         }
         while (tokenizer.current.type == dtDigit) {
             tokenizer.consume();
@@ -282,7 +365,6 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
                     tokenizer.consume();
                 }
             }
-            // TODO +Inf, -Inf, NaN
             "invalid float"
             assert (exists float = parseFloat(tokenizer.input[start..tokenizer.index]));
             return float;
@@ -292,7 +374,7 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
             return int;
         }
     }
-    "byte ::= '#' hexDigit*"
+    "byte ::= '#' hexDigit hexDigit?"
     Byte byte(DatumTokenizer tokenizer) {
         assert (tokenizer.current.type == dtHash);
         tokenizer.consume();
@@ -300,6 +382,10 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
         while (tokenizer.current.type == dtDigit
                     || (tokenizer.current.type == dtAlpha && tokenizer.current.token in "abcdefABCDEF")) {
             tokenizer.consume();
+        }
+        if (tokenizer.index != start + 1
+                    && tokenizer.index != start + 2) {
+            throw Exception("invalid byte literal: expected two or two hex digits");
         }
         "invalid byte" // should be impossible
         assert (exists int = parseInteger(tokenizer.input[start..tokenizer.index], 16));
@@ -317,17 +403,16 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
         return Id(tokenizer.input[start .. tokenizer.index - 1]);
     }
     
-    MetaValue|Id[]|Id meta(DatumTokenizer tokenizer) {
+    MetaValue|Id meta(DatumTokenizer tokenizer) {
         Id ident = identifier(tokenizer);
         switch (tokenizer.current.type)
         case (dtEoi) {
             // plain ident, though actually ambiguous wrt a package name of one component
-            // TODO lookup in some context
             return ident;
         }
         case (dtDot) {
             //package name
-            return pkg(ident, tokenizer);
+            return pkgOrMemberClass(ident, tokenizer);
         }
         case (dtDColon) {
             // declaration
@@ -335,35 +420,47 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
         }
         case (dtLt) {
             //model
-            // XXX not all model things are generic, e.g. value
             return typeApplication(ident, tokenizer);
         }
-        /*case (dtLParen) {
-            //application
-            return application(ident, tokenizer);
-        }*/
+        case (dtOr) {
+            return union(ident, tokenizer);
+        }
+        case (dtAnd) {
+            return intersection(ident, tokenizer);
+        }
         else {
             throw Exception("unexpected token ``tokenizer.current``");
         }
-        //return nothing;
     }
     
+    // XXX Ids and Ceylon identifiers are not the same thing 
+    // but these functions are conflating them
+    String lident(DatumTokenizer tokenizer) => checkLident(identifier(tokenizer)).string;
     Id checkLident(Id ident) {
-        if (!(ident.string[0]?.lowercase else false)) {
+        if (!isLident(ident)) {
             throw Exception("illegal package name component: ``ident``");
         }
         return ident;
     }
+    Boolean isLident(Id ident) {
+        return (ident.string[0]?.lowercase else false);
+    }
     
-    Id lident(DatumTokenizer tokenizer) => checkLident(identifier(tokenizer));
+    Package|ClassOrInterfaceDeclaration|ValueDeclaration|NothingMeta pkgOrMemberClass(Id ident, DatumTokenizer tokenizer) {
+        if (isLident(ident)) {
+            return pkg(ident, tokenizer);
+        } else {
+            return member(ident, tokenizer);
+        }
+    }
     
     Package pkg(Id ident, DatumTokenizer tokenizer) {
-        variable String pkgName = checkLident(ident).string; // XXX Wrong! and ident is not the same production as a member name
+        variable String pkgName = checkLident(ident).string;
         variable Module? mod = null;
         assert (tokenizer.current.type == dtDot);
         while (tokenizer.current.type == dtDot) {
             tokenizer.consume();
-            pkgName += "." + lident(tokenizer).string; // XXX Wrong! and ident is not the same production as a member name
+            pkgName += "." + lident(tokenizer);
             for (m in modules.list) {
                 if (m.name == pkgName) {
                     mod = m;
@@ -382,21 +479,30 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
         }
     }
     
-    ClassDeclaration|ValueDeclaration member(Id pident, DatumTokenizer tokenizer) {
-        assert (tokenizer.current.type == dtDColon);
+    ClassOrInterfaceDeclaration|ValueDeclaration|NothingMeta member(Id pident, DatumTokenizer tokenizer) {
+        assert (tokenizer.current.type == dtDColon
+                    || tokenizer.current.type == dtDot);
         tokenizer.consume();
-        assert (is Package pkg = table.get(pident));
+        value pkg = table.get(pident);
+        if (!is Package|ClassOrInterfaceDeclaration pkg) {
+            throw Exception("container is neither package nor class nor interface: `` pkg else "null" ``");
+        }
+        assert (is Package|ClassOrInterfaceDeclaration pkg);
         variable Package|ClassOrInterfaceDeclaration container = pkg;
         variable NestableDeclaration? nestable = null;
         while (true) {
-            String name = identifier(tokenizer).string; // XXX Wrong! and ident is not the same production as a member name
+            String name = identifier(tokenizer).string;
             if (is Package p = container) {
+                if ("Nothing" == name && "ceylon.language" == p.qualifiedName) {
+                    return nothingMeta;
+                }
                 nestable = p.getMember<NestableDeclaration>(name);
             } else if (is ClassOrInterfaceDeclaration c = container) {
-                nestable = c.getMemberDeclaration<NestableDeclaration>(name);
+                nestable = c.getDeclaredMemberDeclaration<NestableDeclaration>(name);
             } else {
                 assert (false);
             }
+            "class not found"
             assert (exists n = nestable);
             if (is ClassOrInterfaceDeclaration n) {
                 container = n;
@@ -407,8 +513,40 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
                 tokenizer.consume();
             }
         }
-        assert (is ClassDeclaration|ValueDeclaration n = nestable);
+        assert (is ClassOrInterfaceDeclaration|ValueDeclaration n = nestable);
         return n;
+    }
+    
+    Type union(Id ident, DatumTokenizer tokenizer) {
+        assert (tokenizer.current.type == dtOr);
+        tokenizer.consume();
+        Type t1 = toType(table.get(ident));
+        Id other = identifier(tokenizer);
+        Type t2 = toType(table.get(other));
+        variable Type result = t1.union(t2);
+        while (tokenizer.current.type == dtOr) {
+            tokenizer.consume();
+            Type t3 = toType(table.get(identifier(tokenizer)));
+            result = result.union(t3);
+        }
+        return result;
+    }
+    
+    Type intersection(Id ident, DatumTokenizer tokenizer) {
+        assert (tokenizer.current.type == dtAnd);
+        tokenizer.consume();
+        Id other = identifier(tokenizer);
+        ///print(table.get(ident));
+        Type t1 = toType(table.get(ident));
+        Type t2 = toType(table.get(other));
+        variable Type result = t1.intersection(t2);
+        while (tokenizer.current.type == dtAnd) {
+            tokenizer.consume();
+            Id other3 = identifier(tokenizer);
+            Type t3 = toType(table.get(other3));
+            result = result.intersection(t3);
+        }
+        return result;
     }
     
     "typeApplication ::= ident typeArgumentList"
@@ -419,7 +557,7 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
         if (is FunctionDeclaration callable) {
             assert (false);
             //return callable.apply<Anything,Nothing>(*tas);
-        } else if (is ClassDeclaration callable) {
+        } else if (is ClassOrInterfaceDeclaration callable) {
             return callable.apply<Anything>(*tas);
         } else if (is GenericDeclaration callable) {
             throw Exception("unexpected kind of generic declaration ``callable``");
@@ -505,47 +643,6 @@ class DatumParser(Map<Id,FundementalValueType|MetaValue> table) {
      */
 }
 
-void testDatumParser() {
-    object die {}
-    value ct = HashMap<Id,MetaValue>();
-    value p = DatumParser(ct);
-    assert (123 == (p.parse("+123") else die));
-    assert (-1 == (p.parse("-1") else die));
-    assert (0.5 == (p.parse("+0.5") else die));
-    assert (0.0 == (p.parse("+0.0") else die));
-    assert (-0.0 == (p.parse("-0.0") else die)); // TODO proper test for -0.0, Inf, -Inf, NaN
-    assert (-1.0E1 == (p.parse("-1.0E1") else die));
-    
-    assert (#ff.byte == (p.parse("#ff") else die));
-    assert (#ff.byte == (p.parse("#fff") else die));
-    
-    assert ("hello" == (p.parse("\"hello\"") else die));
-    assert ("" == (p.parse("\"\"") else die));
-    assert ("hello" == (p.parse("\"hello\"") else die));
-    assert ("\"hello\"" == (p.parse("\"\\{#22}hello\\{#22}\"") else die));
-    // TODO parsing characters
-    
-    // reference
-    assert ("123a" == (p.parse("123a") else die));
-    //package
-    assert (`package ceylon.language` == (p.parse("ceylon.language") else die));
-    
-    ct.put(Id("1"), `package ceylon.language`);
-    assert (`class String` == (p.parse("1::String") else die));
-    assert (`function sequence` == (p.parse("1::sequence") else die));
-    assert (`value null` == (p.parse("1::null") else die));
-    // XXX do we want null or the ValueDeclaration of null?
-    // compare: function application, where we get the value when we call () the function 
-    assert (`value String.size` == (p.parse("1::String.size") else die));
-    assert (`function String.trim` == (p.parse("1::String.trim") else die));
-    assert (`value List.first` == (p.parse("`1::List.first") else die));
-    ct.put(Id("2"), `String`);
-    //ct.put(Id("3"), `function sequence`);
-    //ct.put(Id("4"), `interface List`);
-    ct.put(Id("5"), `class Entry`);
-    ct.put(Id("6"), `Integer`);
-    assert (`String->Integer` == (p.parse("5<2,6>") else die));
-}
 
 /*
 shared interface Externalizable<Other> of Other
