@@ -371,6 +371,18 @@ void testTuple() {
     assert (exists i = deserialized[0]);
     assertEquals(["hello", 42, smaller], i);
 }
+shared test
+void testTupleRangeTail() {
+    value ser = TabularSerializer();
+    ser.add(["hello", 42, *(1..3)]);
+    value serialized = ser.write();
+    print(serialized);
+    value deser = TabularDeserializer(`module test.com.github.tombentley.tabular`, serialized);
+    value deserialized = deser.select(`[String, Integer, Range<Integer>]`).sequence();
+    assertEquals(1, deserialized.size);
+    assert (exists i = deserialized[0]);
+    assertEquals(["hello", 42, *(1..3)], i);
+}
 "that we can round trip an Array<Integer>"
 shared test
 void testArrayOfInteger() {
