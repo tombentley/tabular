@@ -1,7 +1,15 @@
 
 [compiler]
-source=./source
-resource=./resource
+source=source
+resource=resource
+source=test
 
 [defaults]
 encoding=UTF-8
+
+[formatter]
+maxLineLength=80
+
+[ceylon.formatter]
+maxLineLength=80
+
