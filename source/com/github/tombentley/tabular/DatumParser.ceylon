@@ -19,8 +19,7 @@ import ceylon.language.meta.model {
 }
 import ceylon.collection {
     ArrayList,
-    HashMap,
-    StringBuilder
+    HashMap
 }
 
 "A token produced by a lexer"

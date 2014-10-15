@@ -1,7 +1,6 @@
 import ceylon.collection {
     IdentityMap,
-    HashMap,
-    StringBuilder
+    HashMap
 }
 import ceylon.language.meta.model {
     Model

@@ -1,6 +1,4 @@
-import ceylon.collection {
-    StringBuilder
-}
+
 import ceylon.language.meta.declaration {
     ValueDeclaration
 }

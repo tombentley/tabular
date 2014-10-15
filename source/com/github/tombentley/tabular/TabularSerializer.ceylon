@@ -20,7 +20,6 @@ import ceylon.language.serialization {
 import ceylon.collection {
     ArrayList,
     HashMap,
-    StringBuilder,
     MutableMap,
     Queue,
     LinkedList

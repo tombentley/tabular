@@ -2,7 +2,6 @@ import ceylon.language.meta {
     classModelOf=type
 }
 import ceylon.collection {
-    StringBuilder,
     HashMap,
     ArrayList
 }
@@ -31,7 +30,7 @@ class LineReader(Character|Finished read()) satisfies Locator {
     
     variable Character|Finished cnext = finished;
     
-    StringBuilder line = StringBuilder();
+    variable StringBuilder line = StringBuilder();
     
     "The line number of the last line returned by [[readLine]]."
     variable value lino = 0;
@@ -97,7 +96,7 @@ class LineReader(Character|Finished read()) satisfies Locator {
             }
         }
         value result = line.string;
-        line.reset();
+        line = StringBuilder();
         lino++;
         return result;
     }
