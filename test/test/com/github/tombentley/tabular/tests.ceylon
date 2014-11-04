@@ -2,7 +2,8 @@ import ceylon.test {
     test,
     assertEquals,
     assertTrue,
-    fail
+    fail,
+    ignore
 }
 import com.github.tombentley.tabular {
     TabularSerializer,
@@ -560,6 +561,7 @@ class MemberClassesSub() extends MemberClasses() {
     class FormalMember() extends super.FormalMember() {}
 }
 shared test
+ignore("member classes not yet supported")
 void testNonSharedMember() {
     //value mc = `class MemberClasses`.classApply<Anything,Nothing>();
     //value mcInst = mc.apply();
