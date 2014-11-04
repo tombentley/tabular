@@ -378,7 +378,7 @@ void testTupleRangeTail() {
     value serialized = ser.write();
     print(serialized);
     value deser = TabularDeserializer(`module test.com.github.tombentley.tabular`, serialized);
-    value deserialized = deser.select(`[String, Integer, Range<Integer>]`).sequence();
+    value deserialized = deser.select(`[String, Integer, Integer+]`).sequence();
     assertEquals(1, deserialized.size);
     assert (exists i = deserialized[0]);
     assertEquals(["hello", 42, *(1..3)], i);
