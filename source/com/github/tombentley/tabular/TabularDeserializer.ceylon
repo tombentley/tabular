@@ -172,7 +172,7 @@ shared class TabularDeserializer(Module mod, String serialized) {
     
     // now deserialize the references
     for (reference in context) {
-        assert (is DeserializableReference<Object?> reference);
+        assert (is DeserializableReference<Anything> reference);
         /* XXX DeserializationContext should be Iterable<StatelessReference>?
          or does an element change to StatefulReference once deserialize() 
          has been called? */
@@ -307,15 +307,15 @@ shared class TabularDeserializer(Module mod, String serialized) {
                 return reference;
             });*/
         //print(context);
-        {Reference<Object?>*} refs = context.filter(function(Reference<Object?> reference) {
+        {Reference<Anything>*} refs = context.filter(function(Reference<Anything> reference) {
                 
                 value sub = reference.clazz.subtypeOf(from);
                 //print("``reference.clazz`` subtype of ``from`` ? ``sub``");
                 return sub;
             });
-        return refs.map(function(Reference<Object?> reference) {
+        return refs.map(function(Reference<Anything> reference) {
                 //print("reference: ``reference``");
-                assert (is RealizableReference<Object?> reference);
+                assert (is RealizableReference<Anything> reference);
                 value instance = reference.instance();
                 //print("reference2: ``reference``");
                 //print("instance: `` instance else "null" `` (``type(instance)``)");
